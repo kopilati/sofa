@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sofa-config
+data:
+  auth_enabled: "true"
+  # Production-specific configuration - uses the prefixed service names
+  auth_issuer: "http://prod-dex-service:5556/dex"
+  auth_jwks_url: "http://prod-dex-service:5556/dex/keys"

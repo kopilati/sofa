@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namePrefix: prod-
+
+resources:
+- ../../base
+
+patchesStrategicMerge:
+- sofa-config-patch.yaml
+- resources-patch.yaml
+
+# In prod, we use specific versioned images instead of latest
+images:
+- name: sofa
+  newName: sofa
+  newTag: v1.0.0

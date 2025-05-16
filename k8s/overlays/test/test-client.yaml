@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sofa-test-client
+spec:
+  template:
+    spec:
+      containers:
+      - name: sofa-test-client
+        image: curlimages/curl:7.81.0
+        command:
+        - "/bin/sh"
+        - "-c"
+        - |
+          # First get a token from Dex
+          echo "Getting token from Dex..."
+
+          # For testing, we're using the password grant which is normally 
+          # not recommended for production but works well for automated tests
+          TOKEN_RESPONSE=$(curl -s -X POST \
+            -d "grant_type=password&username=admin&password=password&client_id=sofa-client&client_secret=sofa-client-secret" \
+            http://test-dex-service:5556/dex/token)
+            
+          # Extract the token from the response
+          ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | sed 's/.*"access_token":"\([^"]*\)".*/\1/')
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "Failed to obtain token!"
+            echo "Response: $TOKEN_RESPONSE"
+            exit 1
+          fi
+
+          # Test the Sofa proxy with the token
+          echo "Testing Sofa proxy with token..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            http://test-sofa-service/)
+            
+          if [ "$STATUS" = "200" ]; then
+            echo "Success! Sofa proxy authenticated request properly"
+            exit 0
+          else
+            echo "Failed! Sofa proxy returned status: $STATUS"
+            
+            # Try without token to verify that auth is required
+            NO_AUTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              http://test-sofa-service/)
+              
+            if [ "$NO_AUTH_STATUS" = "401" ]; then
+              echo "Confirmed that auth is required (got 401 without token)"
+            else
+              echo "Unexpected behavior: no auth request returned $NO_AUTH_STATUS"
+            fi
+            
+            exit 1
+          fi
+      restartPolicy: Never
+  backoffLimit: 1

@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sofa
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+      - name: sofa
+        resources:
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"

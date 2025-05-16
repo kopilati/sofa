@@ -1,0 +1,31 @@
+[package]
+name = "sofa"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7.4"
+tokio = { version = "1.36.0", features = ["full"] }
+reqwest = { version = "0.11.24", features = ["json"] }
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+tower-http = { version = "0.5.1", features = ["cors", "trace"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+config = "0.13.4"
+dotenv = "0.15.0"
+anyhow = "1.0.79"
+jsonwebtoken = "9.2.0"
+async-trait = "0.1.77"
+axum-extra = { version = "0.9.2", features = ["typed-header"] }
+http = "1.0.0"
+base64 = "0.21.7"
+reqwest-middleware = "0.2.4"
+reqwest-retry = "0.3.0"
+
+[dev-dependencies]
+assert_matches = "1.5.0"
+
+[[bin]]
+name = "oauth_client"
+path = "tests/oauth_client.rs"

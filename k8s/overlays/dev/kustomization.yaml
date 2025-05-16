@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namePrefix: dev-
+
+resources:
+- ../../base
+
+patchesStrategicMerge:
+- sofa-config-patch.yaml
+
+# Sets the image tag to :latest for all component images
+# This is appropriate for dev environment with frequent changes
+images:
+- name: sofa
+  newName: sofa
+  newTag: latest
