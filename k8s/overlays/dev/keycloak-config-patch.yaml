@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+data:
+  realm.json: |
+    {
+      "clientScopes": [
+        {
+          "name": "topology-http-methods",
+          "protocolMappers": [
+            {
+              "name": "get-permission",
+              "config": {
+                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+              }
+            },
+            {
+              "name": "post-permission",
+              "config": {
+                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+              }
+            },
+            {
+              "name": "put-permission",
+              "config": {
+                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+              }
+            },
+            {
+              "name": "delete-permission",
+              "config": {
+                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+              }
+            },
+            {
+              "name": "patch-permission",
+              "config": {
+                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+              }
+            },
+            {
+              "name": "head-permission",
+              "config": {
+                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+              }
+            }
+          ]
+        }
+      ]
+    } 

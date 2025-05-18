@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sofa
+spec:
+  template:
+    spec:
+      containers:
+      - name: sofa
+        env:
+        - name: SOFA_COUCHDB_URL
+          value: "http://dev-couchdb-service:5984"

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sofa-config
+data:
+  auth_enabled: "false"
+  # The following settings are ignored when auth_enabled is false
+  auth_issuer: ""
+  auth_audience: ""
+  auth_jwks_url: ""

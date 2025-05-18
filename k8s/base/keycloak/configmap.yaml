@@ -1,0 +1,209 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+data:
+  realm.json: |
+    {
+      "realm": "sofa",
+      "enabled": true,
+      "displayName": "Sofa Realm",
+      "sslRequired": "none",
+      "registrationAllowed": false,
+      "accessTokenLifespan": 1800,
+      "clients": [
+        {
+          "clientId": "sofa-client",
+          "name": "Sofa Client",
+          "enabled": true,
+          "publicClient": false,
+          "secret": "sofa-client-secret",
+          "redirectUris": ["*"],
+          "webOrigins": ["*"],
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "1800"
+          }
+        },
+        {
+          "clientId": "topology",
+          "name": "Topology Client",
+          "enabled": true,
+          "publicClient": false,
+          "secret": "topology",
+          "redirectUris": ["*"],
+          "webOrigins": ["*"],
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "1800"
+          },
+          "defaultClientScopes": ["topology-http-methods"]
+        }
+      ],
+      "clientScopes": [
+        {
+          "name": "sofa-custom-scope",
+          "description": "Scope with custom claims for Sofa",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "true"
+          },
+          "protocolMappers": [
+            {
+              "name": "organization-mapper",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-attribute-mapper",
+              "consentRequired": false,
+              "config": {
+                "userinfo.token.claim": "true",
+                "user.attribute": "organization",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "organization",
+                "jsonType.label": "String"
+              }
+            },
+            {
+              "name": "role-mapper",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-attribute-mapper",
+              "consentRequired": false,
+              "config": {
+                "userinfo.token.claim": "true",
+                "user.attribute": "role",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "role",
+                "jsonType.label": "String"
+              }
+            }
+          ]
+        },
+        {
+          "name": "topology-http-methods",
+          "description": "HTTP method permissions for Topology client",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "true"
+          },
+          "protocolMappers": [
+            {
+              "name": "get-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"\/*\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "get",
+                "jsonType.label": "JSON"
+              }
+            },
+            {
+              "name": "post-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"\/*\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "post",
+                "jsonType.label": "JSON"
+              }
+            },
+            {
+              "name": "put-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"\/*\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "put",
+                "jsonType.label": "JSON"
+              }
+            },
+            {
+              "name": "delete-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"\/*\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "delete",
+                "jsonType.label": "JSON"
+              }
+            },
+            {
+              "name": "patch-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"\/*\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "patch",
+                "jsonType.label": "JSON"
+              }
+            },
+            {
+              "name": "head-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"\/*\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "head",
+                "jsonType.label": "JSON"
+              }
+            }
+          ]
+        }
+      ],
+      "defaultDefaultClientScopes": ["sofa-custom-scope"],
+      "users": [
+        {
+          "username": "sofa-user",
+          "email": "sofa-user@example.com",
+          "enabled": true,
+          "firstName": "Sofa",
+          "lastName": "User",
+          "credentials": [
+            {
+              "type": "password",
+              "value": "password",
+              "temporary": false
+            }
+          ],
+          "clientRoles": {},
+          "attributes": {
+            "organization": ["Sofa Organization"],
+            "role": ["admin"]
+          }
+        }
+      ]
+    } 
