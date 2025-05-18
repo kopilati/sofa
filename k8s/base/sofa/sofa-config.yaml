@@ -4,6 +4,6 @@ metadata:
   name: sofa-config
 data:
   auth_enabled: "true"
-  auth_issuer: "http://dex-service:5556/dex"
+  auth_issuer: "http://keycloak-service:8080/auth/realms/sofa"
   auth_audience: "sofa-client"
-  auth_jwks_url: "http://dex-service:5556/dex/keys"
+  auth_jwks_url: "http://keycloak-service:8080/auth/realms/sofa/protocol/openid-connect/certs"

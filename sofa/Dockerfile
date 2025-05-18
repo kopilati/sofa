@@ -1,4 +1,4 @@
-FROM rust:slim as builder
+FROM rust:slim AS builder
 
 WORKDIR /usr/src/sofa
 COPY . .
@@ -24,7 +24,7 @@ RUN mkdir -p /app/config
 
 # Set environment variables
 ENV SOFA_SERVER_PORT=3000
-ENV SOFA_COUCHDB_URL=http://localhost:5984
+ENV SOFA_COUCHDB_URL=http://dev-couchdb-service:5984
 ENV SOFA_COUCHDB_USERNAME=admin
 ENV SOFA_COUCHDB_PASSWORD=password
 ENV CONFIG_DIR=/app/config

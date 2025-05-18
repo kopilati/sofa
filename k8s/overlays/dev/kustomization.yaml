@@ -8,6 +8,8 @@ resources:
 
 patchesStrategicMerge:
 - sofa-config-patch.yaml
+- sofa-deployment-patch.yaml
+- keycloak-config-patch.yaml
 
 # Sets the image tag to :latest for all component images
 # This is appropriate for dev environment with frequent changes

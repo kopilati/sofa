@@ -5,5 +5,5 @@ metadata:
 data:
   auth_enabled: "true"
   # Production-specific configuration - uses the prefixed service names
-  auth_issuer: "http://prod-dex-service:5556/dex"
-  auth_jwks_url: "http://prod-dex-service:5556/dex/keys"
+  auth_issuer: "http://prod-keycloak-service:8080/auth/realms/sofa"
+  auth_jwks_url: "http://prod-keycloak-service:8080/auth/realms/sofa/protocol/openid-connect/certs"

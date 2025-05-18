@@ -1,14 +1,15 @@
 use axum::{
     extract::{Request, State},
-    http::StatusCode,
+    http::{Method, StatusCode, Uri},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, TokenData, Validation};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 use reqwest::Client;
-use tracing::error;
+use tracing::{error, info, debug};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 
@@ -33,6 +34,7 @@ struct JwksResponse {
     keys: Vec<Jwk>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Jwk {
     kid: Option<String>,
@@ -47,16 +49,133 @@ struct Jwk {
     crv: Option<String>, // curve for EC
 }
 
-// Middleware for validating JWT tokens
+// Check if a path is authorized based on the claims
+fn is_authorized(method: &Method, path: &str, claims: &JwtClaims) -> bool {
+    // Convert HTTP method to lowercase claim name
+    let claim_name = method.as_str().to_lowercase();
+    
+    debug!("Checking authorization for method: '{}' (claim name: '{}'), path: '{}'", method, claim_name, path);
+    debug!("Available claims: {:?}", claims.additional_claims);
+    
+    // Get the claim value for this method (if it exists)
+    if let Some(claim_value) = claims.additional_claims.get(&claim_name) {
+        debug!("Found claim for method {}: {:?}", claim_name, claim_value);
+        
+        // Try also with method name in all lowercase
+        debug!("Normalized path: '{}'", path);
+        if path.starts_with("/") {
+            debug!("Path with leading slash: '{}'", path);
+        } else {
+            debug!("Path without leading slash: '{}'", path);
+        }
+        
+        // Check if the claim value is an array
+        if let Some(paths) = claim_value.as_array() {
+            debug!("Claim is an array with {} elements", paths.len());
+            
+            // Check each path pattern in the array
+            for path_pattern in paths {
+                if let Some(pattern) = path_pattern.as_str() {
+                    debug!("Checking pattern '{}' against path '{}'", pattern, path);
+                    
+                    // Check for the wildcard at the end (prefix match)
+                    if pattern.ends_with("*") {
+                        let prefix = &pattern[0..pattern.len()-1];
+                        debug!("Wildcard pattern, checking if '{}' starts with '{}'", path, prefix);
+                        if path.starts_with(prefix) {
+                            debug!("Authorized via prefix match: {} starts with {}", path, prefix);
+                            return true;
+                        } else {
+                            debug!("Prefix match failed: '{}' does not start with '{}'", path, prefix);
+                        }
+                    } 
+                    // Exact match
+                    else if pattern == path {
+                        debug!("Authorized via exact match: {} equals {}", path, pattern);
+                        return true;
+                    } else {
+                        debug!("Exact match failed: '{}' != '{}'", pattern, path);
+                        
+                        // Try with/without leading slash
+                        if pattern.starts_with("/") && !path.starts_with("/") {
+                            let pattern_without_slash = &pattern[1..];
+                            debug!("Trying without leading slash: '{}' == '{}'", pattern_without_slash, path);
+                            if pattern_without_slash == path {
+                                debug!("Authorized via exact match (without leading slash): {} equals {}", path, pattern_without_slash);
+                                return true;
+                            }
+                        } else if !pattern.starts_with("/") && path.starts_with("/") {
+                            let path_without_slash = &path[1..];
+                            debug!("Trying with path without leading slash: '{}' == '{}'", pattern, path_without_slash);
+                            if pattern == path_without_slash {
+                                debug!("Authorized via exact match (path without leading slash): {} equals {}", path_without_slash, pattern);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            // No matching pattern found
+            debug!("No matching pattern found for path: {}", path);
+            return false;
+        } 
+        // Claim is not an array (possibly a string or other type)
+        else if let Some(pattern) = claim_value.as_str() {
+            debug!("Claim is a string: {}", pattern);
+            
+            // Same logic as above for a single string
+            if pattern.ends_with("*") {
+                let prefix = &pattern[0..pattern.len()-1];
+                debug!("Wildcard pattern (string), checking if '{}' starts with '{}'", path, prefix);
+                if path.starts_with(prefix) {
+                    debug!("Authorized via prefix match (string): {} starts with {}", path, prefix);
+                    return true;
+                }
+            } else if pattern == path {
+                debug!("Authorized via exact match (string): {} equals {}", path, pattern);
+                return true;
+            } else {
+                // Try with/without leading slash
+                if pattern.starts_with("/") && !path.starts_with("/") {
+                    let pattern_without_slash = &pattern[1..];
+                    if pattern_without_slash == path {
+                        debug!("Authorized via exact match (string, without leading slash): {} equals {}", path, pattern_without_slash);
+                        return true;
+                    }
+                } else if !pattern.starts_with("/") && path.starts_with("/") {
+                    let path_without_slash = &path[1..];
+                    if pattern == path_without_slash {
+                        debug!("Authorized via exact match (string, path without leading slash): {} equals {}", path_without_slash, pattern);
+                        return true;
+                    }
+                }
+            }
+        }
+    } else {
+        debug!("No claim found for method: {}", claim_name);
+    }
+    
+    // No matching claim found or invalid format
+    debug!("Authorization failed for {}: {}", method, path);
+    false
+}
+
+// Middleware for validating JWT tokens and authorizing requests
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     // Skip auth if disabled
     if !state.config.auth.enabled {
         return next.run(request).await;
     }
+
+    // Get method and path for authorization check
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    
+    debug!("Authenticating request: {} {}", method, path);
 
     // Check for Authorization header
     let auth_header = request
@@ -80,9 +199,17 @@ pub async fn auth_middleware(
 
     // Validate the token
     match validate_token(token, &state.config.auth, &state.client).await {
-        Ok(_) => {
-            // Token is valid, proceed with the request
-            next.run(request).await
+        Ok(token_data) => {
+            // Token is valid, now check authorization
+            if is_authorized(&method, &path, &token_data.claims) {
+                // Both authentication and authorization succeeded
+                info!("Request authorized: {} {}", method, path);
+                next.run(request).await
+            } else {
+                // Authentication succeeded but authorization failed
+                error!("Authorization failed for {} {}", method, path);
+                (StatusCode::FORBIDDEN, "Not authorized to access this resource").into_response()
+            }
         }
         Err(err) => {
             // Invalid token
@@ -102,6 +229,19 @@ async fn validate_token(
     let header = decode_header(token).map_err(|e| format!("Invalid token header: {}", e))?;
     
     let kid = header.kid.as_deref();
+    
+    // Log the config for debugging
+    debug!("Auth config - enabled: {}", auth_config.enabled);
+    if let Some(issuer) = &auth_config.issuer {
+        debug!("Auth config - issuer: {}", issuer);
+    } else {
+        debug!("Auth config - issuer is not set");
+    }
+    if let Some(jwks_url) = &auth_config.jwks_url {
+        debug!("Auth config - jwks_url: {}", jwks_url);
+    } else {
+        error!("Auth config - jwks_url is not set");
+    }
     
     // If jwks_url is configured, fetch the JWKS
     let decoding_key = if let Some(jwks_url) = &auth_config.jwks_url {
@@ -157,6 +297,8 @@ async fn validate_token(
 
 // Fetch JWKS from the provided URL
 async fn fetch_jwks(jwks_url: &str, client: &Client) -> Result<JwksResponse, String> {
+    info!("Fetching JWKS from URL: {}", jwks_url);
+    
     let response = client
         .get(jwks_url)
         .send()
@@ -164,10 +306,18 @@ async fn fetch_jwks(jwks_url: &str, client: &Client) -> Result<JwksResponse, Str
         .map_err(|e| format!("Failed to fetch JWKS: {}", e))?;
     
     if !response.status().is_success() {
-        return Err(format!("JWKS request failed with status: {}", response.status()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_else(|_| "Could not read response body".to_string());
+        error!("JWKS request failed with status: {}, body: {}", status, body);
+        return Err(format!("JWKS request failed with status: {}", status));
     }
     
-    response.json::<JwksResponse>()
-        .await
+    let response_text = response.text().await
+        .map_err(|e| format!("Failed to read JWKS response: {}", e))?;
+    
+    info!("Received JWKS response: {}", response_text);
+    
+    // Parse the response
+    serde_json::from_str::<JwksResponse>(&response_text)
         .map_err(|e| format!("Failed to parse JWKS response: {}", e))
 } 

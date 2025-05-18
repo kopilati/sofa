@@ -5,5 +5,6 @@ metadata:
 data:
   auth_enabled: "true"
   # Dev-specific configuration - uses the prefixed service names
-  auth_issuer: "http://dev-dex-service:5556/dex"
-  auth_jwks_url: "http://dev-dex-service:5556/dex/keys"
+  auth_issuer: "http://localhost:30082/realms/sofa"
+  auth_jwks_url: "http://dev-keycloak-service:8080/realms/sofa/protocol/openid-connect/certs"
+  auth_audience: "topology"

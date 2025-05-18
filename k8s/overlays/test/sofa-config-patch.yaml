@@ -5,5 +5,5 @@ metadata:
 data:
   auth_enabled: "true"
   # Test-specific configuration - uses the prefixed service names
-  auth_issuer: "http://test-dex-service:5556/dex"
-  auth_jwks_url: "http://test-dex-service:5556/dex/keys"
+  auth_issuer: "http://test-keycloak-service:8080/realms/sofa"
+  auth_jwks_url: "http://test-keycloak-service:8080/realms/sofa/protocol/openid-connect/certs"

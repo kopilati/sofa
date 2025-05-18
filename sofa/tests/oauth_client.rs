@@ -35,9 +35,9 @@ async fn get_token(dex_url: &str, client_id: &str, client_secret: &str) -> Resul
         ("grant_type", "password"),
         ("client_id", client_id),
         ("client_secret", client_secret),
-        ("username", "admin"),
+        ("username", "sofa-user"),
         ("password", "password"),
-        ("scope", "openid profile email"),
+        ("scope", "openid"),
     ];
     
     // Get token
@@ -87,8 +87,8 @@ async fn test_sofa_without_token(sofa_url: &str, path: &str) -> Result<(StatusCo
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Configure these values based on your environment
-    let dex_url = std::env::var("DEX_URL").unwrap_or_else(|_| "http://localhost:30556/dex".to_string());
-    let sofa_url = std::env::var("SOFA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let dex_url = std::env::var("DEX_URL").unwrap_or_else(|_| "http://localhost:30082/realms/sofa/protocol/openid-connect".to_string());
+    let sofa_url = std::env::var("SOFA_URL").unwrap_or_else(|_| "http://localhost:30081".to_string());
     let client_id = std::env::var("CLIENT_ID").unwrap_or_else(|_| "sofa-client".to_string());
     let client_secret = std::env::var("CLIENT_SECRET").unwrap_or_else(|_| "sofa-client-secret".to_string());
     

@@ -10,8 +10,8 @@ patchesStrategicMerge:
 - sofa-config-patch.yaml
 - resources-patch.yaml
 
-# In prod, we use specific versioned images instead of latest
+# Sets the image tag for production deployment
 images:
 - name: sofa
   newName: sofa
-  newTag: v1.0.0
+  newTag: stable

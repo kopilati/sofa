@@ -1,9 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: sofa-config
-data:
-  auth_enabled: "true"
-  auth_issuer: "http://dex-service:5556/dex"
-  auth_audience: "sofa-client"
-  auth_jwks_url: "http://dex-service:5556/dex/keys"

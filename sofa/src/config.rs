@@ -59,7 +59,41 @@ impl AppConfig {
             // Attempt to load config file if present
             .add_source(File::from(PathBuf::from(format!("{}/config", config_dir))).required(false));
 
-        // Build and convert to our Config type
-        builder.build()?.try_deserialize()
+        // Build and attempt to deserialize to our Config type
+        let mut config: AppConfig = builder.build()?.try_deserialize()?;
+        
+        // Explicitly check and set environment variables for couchdb url
+        if let Ok(couchdb_url) = env::var("SOFA_COUCHDB_URL") {
+            config.couchdb_url = couchdb_url;
+        }
+        
+        // Also explicitly handle username and password
+        if let Ok(couchdb_username) = env::var("SOFA_COUCHDB_USERNAME") {
+            config.couchdb_username = couchdb_username;
+        }
+        
+        if let Ok(couchdb_password) = env::var("SOFA_COUCHDB_PASSWORD") {
+            config.couchdb_password = couchdb_password;
+        }
+        
+        // Explicitly check and set environment variables for auth config
+        // This is to workaround potential issues with nested config structures
+        if let Ok(enabled) = env::var("SOFA_AUTH_ENABLED") {
+            config.auth.enabled = enabled.to_lowercase() == "true";
+        }
+        
+        if let Ok(issuer) = env::var("SOFA_AUTH_ISSUER") {
+            config.auth.issuer = Some(issuer);
+        }
+        
+        if let Ok(audience) = env::var("SOFA_AUTH_AUDIENCE") {
+            config.auth.audience = Some(audience);
+        }
+        
+        if let Ok(jwks_url) = env::var("SOFA_AUTH_JWKS_URL") {
+            config.auth.jwks_url = Some(jwks_url);
+        }
+        
+        Ok(config)
     }
 } 
