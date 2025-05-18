@@ -12,37 +12,37 @@ data:
             {
               "name": "get-permission",
               "config": {
-                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+                "claim.value": "[\"^/.*$\"]"
               }
             },
             {
               "name": "post-permission",
               "config": {
-                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+                "claim.value": "[\"^/.*$\"]"
               }
             },
             {
               "name": "put-permission",
               "config": {
-                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+                "claim.value": "[\"^/.*$\"]"
               }
             },
             {
               "name": "delete-permission",
               "config": {
-                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+                "claim.value": "[\"^/.*$\"]"
               }
             },
             {
               "name": "patch-permission",
               "config": {
-                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+                "claim.value": "[\"^/.*$\"]"
               }
             },
             {
               "name": "head-permission",
               "config": {
-                "claim.value": "[\"\\/db/*\", \"\\/_all_dbs\"]"
+                "claim.value": "[\"^/.*$\"]"
               }
             }
           ]

@@ -12,6 +12,7 @@ use reqwest::Client;
 use tracing::{error, info, debug};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use regex::Regex;
 
 use crate::config::AuthConfig;
 use crate::proxy::AppState;
@@ -49,113 +50,62 @@ struct Jwk {
     crv: Option<String>, // curve for EC
 }
 
+// Token type to store in extensions
+#[derive(Clone)]
+pub struct AuthToken(pub String);
+
+// UserId type to store in extensions
+#[derive(Clone)]
+pub struct UserId(pub String);
+
 // Check if a path is authorized based on the claims
 fn is_authorized(method: &Method, path: &str, claims: &JwtClaims) -> bool {
-    // Convert HTTP method to lowercase claim name
     let claim_name = method.as_str().to_lowercase();
-    
     debug!("Checking authorization for method: '{}' (claim name: '{}'), path: '{}'", method, claim_name, path);
     debug!("Available claims: {:?}", claims.additional_claims);
-    
-    // Get the claim value for this method (if it exists)
+
     if let Some(claim_value) = claims.additional_claims.get(&claim_name) {
         debug!("Found claim for method {}: {:?}", claim_name, claim_value);
-        
-        // Try also with method name in all lowercase
-        debug!("Normalized path: '{}'", path);
-        if path.starts_with("/") {
-            debug!("Path with leading slash: '{}'", path);
-        } else {
-            debug!("Path without leading slash: '{}'", path);
-        }
-        
-        // Check if the claim value is an array
         if let Some(paths) = claim_value.as_array() {
             debug!("Claim is an array with {} elements", paths.len());
-            
-            // Check each path pattern in the array
             for path_pattern in paths {
                 if let Some(pattern) = path_pattern.as_str() {
-                    debug!("Checking pattern '{}' against path '{}'", pattern, path);
-                    
-                    // Check for the wildcard at the end (prefix match)
-                    if pattern.ends_with("*") {
-                        let prefix = &pattern[0..pattern.len()-1];
-                        debug!("Wildcard pattern, checking if '{}' starts with '{}'", path, prefix);
-                        if path.starts_with(prefix) {
-                            debug!("Authorized via prefix match: {} starts with {}", path, prefix);
-                            return true;
-                        } else {
-                            debug!("Prefix match failed: '{}' does not start with '{}'", path, prefix);
+                    debug!("Checking regex pattern '{}' against path '{}'", pattern, path);
+                    match Regex::new(pattern) {
+                        Ok(re) => {
+                            if re.is_match(path) {
+                                debug!("Authorized via regex match: '{}' matches '{}'", pattern, path);
+                                return true;
+                            } else {
+                                debug!("Regex match failed: '{}' does not match '{}'", pattern, path);
+                            }
                         }
-                    } 
-                    // Exact match
-                    else if pattern == path {
-                        debug!("Authorized via exact match: {} equals {}", path, pattern);
-                        return true;
-                    } else {
-                        debug!("Exact match failed: '{}' != '{}'", pattern, path);
-                        
-                        // Try with/without leading slash
-                        if pattern.starts_with("/") && !path.starts_with("/") {
-                            let pattern_without_slash = &pattern[1..];
-                            debug!("Trying without leading slash: '{}' == '{}'", pattern_without_slash, path);
-                            if pattern_without_slash == path {
-                                debug!("Authorized via exact match (without leading slash): {} equals {}", path, pattern_without_slash);
-                                return true;
-                            }
-                        } else if !pattern.starts_with("/") && path.starts_with("/") {
-                            let path_without_slash = &path[1..];
-                            debug!("Trying with path without leading slash: '{}' == '{}'", pattern, path_without_slash);
-                            if pattern == path_without_slash {
-                                debug!("Authorized via exact match (path without leading slash): {} equals {}", path_without_slash, pattern);
-                                return true;
-                            }
+                        Err(e) => {
+                            error!("Invalid regex pattern '{}': {}", pattern, e);
+                            continue;
                         }
                     }
                 }
             }
-            // No matching pattern found
-            debug!("No matching pattern found for path: {}", path);
+            debug!("No matching regex pattern found for path: {}", path);
             return false;
-        } 
-        // Claim is not an array (possibly a string or other type)
-        else if let Some(pattern) = claim_value.as_str() {
-            debug!("Claim is a string: {}", pattern);
-            
-            // Same logic as above for a single string
-            if pattern.ends_with("*") {
-                let prefix = &pattern[0..pattern.len()-1];
-                debug!("Wildcard pattern (string), checking if '{}' starts with '{}'", path, prefix);
-                if path.starts_with(prefix) {
-                    debug!("Authorized via prefix match (string): {} starts with {}", path, prefix);
-                    return true;
+        } else if let Some(pattern) = claim_value.as_str() {
+            debug!("Claim is a string: {} (interpreted as regex)", pattern);
+            match Regex::new(pattern) {
+                Ok(re) => {
+                    if re.is_match(path) {
+                        debug!("Authorized via regex match (string): '{}' matches '{}'", pattern, path);
+                        return true;
+                    }
                 }
-            } else if pattern == path {
-                debug!("Authorized via exact match (string): {} equals {}", path, pattern);
-                return true;
-            } else {
-                // Try with/without leading slash
-                if pattern.starts_with("/") && !path.starts_with("/") {
-                    let pattern_without_slash = &pattern[1..];
-                    if pattern_without_slash == path {
-                        debug!("Authorized via exact match (string, without leading slash): {} equals {}", path, pattern_without_slash);
-                        return true;
-                    }
-                } else if !pattern.starts_with("/") && path.starts_with("/") {
-                    let path_without_slash = &path[1..];
-                    if pattern == path_without_slash {
-                        debug!("Authorized via exact match (string, path without leading slash): {} equals {}", path_without_slash, pattern);
-                        return true;
-                    }
+                Err(e) => {
+                    error!("Invalid regex pattern '{}': {}", pattern, e);
                 }
             }
         }
     } else {
         debug!("No claim found for method: {}", claim_name);
     }
-    
-    // No matching claim found or invalid format
     debug!("Authorization failed for {}: {}", method, path);
     false
 }
@@ -178,12 +128,11 @@ pub async fn auth_middleware(
     debug!("Authenticating request: {} {}", method, path);
 
     // Check for Authorization header
-    let auth_header = request
+    let auth_header = match request
         .headers()
         .get("Authorization")
-        .and_then(|header| header.to_str().ok());
-
-    let auth_header = match auth_header {
+        .and_then(|header| header.to_str().ok())
+    {
         Some(header) => header,
         None => {
             return (StatusCode::UNAUTHORIZED, "Missing authorization header").into_response();
@@ -198,18 +147,24 @@ pub async fn auth_middleware(
     };
 
     // Validate the token
-    match validate_token(token, &state.config.auth, &state.client).await {
+    let validation_result = validate_token(token, &state.config.auth, &state.client).await;
+    
+    match validation_result {
         Ok(token_data) => {
-            // Token is valid, now check authorization
-            if is_authorized(&method, &path, &token_data.claims) {
-                // Both authentication and authorization succeeded
-                info!("Request authorized: {} {}", method, path);
-                next.run(request).await
-            } else {
-                // Authentication succeeded but authorization failed
+            // Check authorization
+            if !is_authorized(&method, &path, &token_data.claims) {
                 error!("Authorization failed for {} {}", method, path);
-                (StatusCode::FORBIDDEN, "Not authorized to access this resource").into_response()
+                return (StatusCode::FORBIDDEN, "Not authorized to access this resource").into_response();
             }
+            
+            // Store user ID in extensions if available
+            if let Some(sub) = token_data.claims.sub {
+                request.extensions_mut().insert(UserId(sub));
+            }
+            
+            // Authentication and authorization succeeded
+            info!("Request authorized: {} {}", method, path);
+            next.run(request).await
         }
         Err(err) => {
             // Invalid token

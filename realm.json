@@ -107,7 +107,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "consentRequired": false,
           "config": {
-            "claim.value": "[\"\\//*\", \"\\/_all_dbs\"]",
+            "claim.value": "[\"^/.*$\", \"^/_all_dbs$\"]",
             "userinfo.token.claim": "true",
             "id.token.claim": "true",
             "access.token.claim": "true",
@@ -121,7 +121,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "consentRequired": false,
           "config": {
-            "claim.value": "[\"\\//*\", \"\\/_all_dbs\"]",
+            "claim.value": "[\"^/.*$\", \"^/_all_dbs$\"]",
             "userinfo.token.claim": "true",
             "id.token.claim": "true",
             "access.token.claim": "true",
@@ -135,7 +135,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "consentRequired": false,
           "config": {
-            "claim.value": "[\"\\//*\", \"\\/_all_dbs\"]",
+            "claim.value": "[\"^/.*$\", \"^/_all_dbs$\"]",
             "userinfo.token.claim": "true",
             "id.token.claim": "true",
             "access.token.claim": "true",
@@ -149,7 +149,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "consentRequired": false,
           "config": {
-            "claim.value": "[\"\\//*\", \"\\/_all_dbs\"]",
+            "claim.value": "[\"^/.*$\", \"^/_all_dbs$\"]",
             "userinfo.token.claim": "true",
             "id.token.claim": "true",
             "access.token.claim": "true",
@@ -163,7 +163,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "consentRequired": false,
           "config": {
-            "claim.value": "[\"\\//*\", \"\\/_all_dbs\"]",
+            "claim.value": "[\"^/.*$\", \"^/_all_dbs$\"]",
             "userinfo.token.claim": "true",
             "id.token.claim": "true",
             "access.token.claim": "true",
@@ -177,7 +177,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "consentRequired": false,
           "config": {
-            "claim.value": "[\"\\//*\", \"\\/_all_dbs\"]",
+            "claim.value": "[\"^/.*$\", \"^/_all_dbs$\"]",
             "userinfo.token.claim": "true",
             "id.token.claim": "true",
             "access.token.claim": "true",

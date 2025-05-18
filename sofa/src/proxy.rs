@@ -10,23 +10,21 @@ use std::sync::Arc;
 use tracing::{debug, error, info};
 
 use crate::config::AppConfig;
+use crate::audit::AuditLogger;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
-    pub client: Client,
+    pub client: Arc<Client>,
+    pub audit_logger: Option<AuditLogger>,
 }
 
 impl AppState {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: AppConfig, client: Arc<Client>, audit_logger: Option<AuditLogger>) -> Self {
         // Log the CouchDB URL for debugging
         info!("Creating AppState with CouchDB URL: {}", config.couchdb_url);
         
-        let client = Client::builder()
-            .build()
-            .expect("Failed to create HTTP client");
-        
-        Self { config, client }
+        Self { config, client, audit_logger }
     }
 }
 

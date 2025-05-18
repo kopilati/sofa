@@ -10,6 +10,8 @@ pub struct AppConfig {
     pub couchdb_password: String,
     pub server_port: u16,
     pub auth: AuthConfig,
+    pub audit_log_service_url: Option<String>,
+    pub audit_enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -39,6 +41,8 @@ impl Default for AppConfig {
             couchdb_password: "password".to_string(),
             server_port: 3000,
             auth: AuthConfig::default(),
+            audit_log_service_url: None,
+            audit_enabled: false,
         }
     }
 }
@@ -92,6 +96,15 @@ impl AppConfig {
         
         if let Ok(jwks_url) = env::var("SOFA_AUTH_JWKS_URL") {
             config.auth.jwks_url = Some(jwks_url);
+        }
+        
+        // Handle audit configuration
+        if let Ok(audit_enabled) = env::var("SOFA_AUDIT_ENABLED") {
+            config.audit_enabled = audit_enabled.to_lowercase() == "true";
+        }
+        
+        if let Ok(audit_url) = env::var("SOFA_AUDIT_LOG_SERVICE_URL") {
+            config.audit_log_service_url = Some(audit_url);
         }
         
         Ok(config)

@@ -8,3 +8,5 @@ data:
   auth_issuer: "http://localhost:30082/realms/sofa"
   auth_jwks_url: "http://dev-keycloak-service:8080/realms/sofa/protocol/openid-connect/certs"
   auth_audience: "topology"
+  audit_enabled: "true"
+  audit_log_service_url: "http://dev-audit-service:8080/logs"

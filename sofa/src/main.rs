@@ -1,6 +1,7 @@
 mod config;
 mod proxy;
 mod auth;
+mod audit;
 
 use anyhow::Result;
 use axum::{
@@ -15,10 +16,12 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, Level};
 use tracing_subscriber::FmtSubscriber;
+use reqwest::Client;
 
 use auth::auth_middleware;
 use config::AppConfig;
 use proxy::{proxy_handler, AppState};
+use audit::{AuditLogger, audit_middleware};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -67,9 +70,29 @@ async fn main() -> Result<()> {
             info!("OAuth2 JWKS URL is not set");
         }
     }
+    
+    // Log audit configuration
+    info!("Audit logging enabled: {}", config.audit_enabled);
+    if config.audit_enabled {
+        if let Some(url) = &config.audit_log_service_url {
+            info!("Audit log service URL: {}", url);
+        } else {
+            info!("Audit log service URL is not set");
+        }
+    }
+
+    // Create HTTP client
+    let client = Arc::new(Client::new());
+
+    // Create the audit logger if enabled
+    let audit_logger = if config.audit_enabled {
+        AuditLogger::new(Arc::new(config.clone()), client.clone())
+    } else {
+        None
+    };
 
     // Create application state
-    let app_state = Arc::new(AppState::new(config.clone()));
+    let app_state = Arc::new(AppState::new(config.clone(), client, audit_logger));
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -81,6 +104,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/*path", any(proxy_handler))
         .layer(middleware::from_fn_with_state(app_state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(app_state.clone(), audit_middleware))
         .with_state(app_state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);

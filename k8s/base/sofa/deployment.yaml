@@ -58,6 +58,19 @@ spec:
               name: sofa-config
               key: auth_jwks_url
               optional: true
+        # Audit Configuration
+        - name: SOFA_AUDIT_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: audit_enabled
+              optional: true
+        - name: SOFA_AUDIT_LOG_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: audit_log_service_url
+              optional: true
         resources:
           limits:
             cpu: "500m"

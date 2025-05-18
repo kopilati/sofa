@@ -8,3 +8,6 @@ data:
   auth_issuer: ""
   auth_audience: ""
   auth_jwks_url: ""
+  # Audit configuration
+  audit_enabled: "false"
+  audit_log_service_url: ""

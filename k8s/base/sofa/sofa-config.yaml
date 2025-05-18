@@ -7,3 +7,5 @@ data:
   auth_issuer: "http://keycloak-service:8080/auth/realms/sofa"
   auth_audience: "sofa-client"
   auth_jwks_url: "http://keycloak-service:8080/auth/realms/sofa/protocol/openid-connect/certs"
+  audit_enabled: "true"
+  audit_log_service_url: "http://audit-service:8080/logs"
