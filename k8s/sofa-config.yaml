@@ -11,3 +11,6 @@ data:
   # Audit configuration
   audit_enabled: "false"
   audit_log_service_url: ""
+  # Note: master_enc_key is stored in a Secret, not in this ConfigMap
+  # Encrypted endpoints - comma-separated list of regex patterns
+  encrypted_endpoints: "^/secure/.*,^/api/private/.*"

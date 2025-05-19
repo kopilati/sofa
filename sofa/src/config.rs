@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub auth: AuthConfig,
     pub audit_log_service_url: Option<String>,
     pub audit_enabled: bool,
+    pub master_enc_key: Option<String>,
+    pub encrypted_endpoints: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -43,6 +45,8 @@ impl Default for AppConfig {
             auth: AuthConfig::default(),
             audit_log_service_url: None,
             audit_enabled: false,
+            master_enc_key: None,
+            encrypted_endpoints: Vec::new(),
         }
     }
 }
@@ -105,6 +109,21 @@ impl AppConfig {
         
         if let Ok(audit_url) = env::var("SOFA_AUDIT_LOG_SERVICE_URL") {
             config.audit_log_service_url = Some(audit_url);
+        }
+        
+        // Handle master encryption key
+        if let Ok(master_key) = env::var("SOFA_MASTER_ENC_KEY") {
+            config.master_enc_key = Some(master_key);
+        }
+        
+        // Handle encrypted endpoints
+        if let Ok(endpoints) = env::var("SOFA_ENCRYPTED_ENDPOINTS") {
+            // Split by comma and trim each entry
+            config.encrypted_endpoints = endpoints
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
         
         Ok(config)

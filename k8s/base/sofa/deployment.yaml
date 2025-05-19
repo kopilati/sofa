@@ -71,6 +71,19 @@ spec:
               name: sofa-config
               key: audit_log_service_url
               optional: true
+        # Encryption Configuration
+        - name: SOFA_MASTER_ENC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: sofa-secrets
+              key: master_enc_key
+              optional: true
+        - name: SOFA_ENCRYPTED_ENDPOINTS
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: encrypted_endpoints
+              optional: true
         resources:
           limits:
             cpu: "500m"

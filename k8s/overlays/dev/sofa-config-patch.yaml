@@ -10,3 +10,5 @@ data:
   auth_audience: "topology"
   audit_enabled: "true"
   audit_log_service_url: "http://dev-audit-service:8080/logs"
+  # Dev-specific encrypted endpoints
+  encrypted_endpoints: "^/secure/.*,^/api/private/.*,^/dev/.*"
