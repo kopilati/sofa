@@ -23,7 +23,7 @@ use auth::auth_middleware;
 use config::AppConfig;
 use proxy::{proxy_handler, AppState};
 use audit::{AuditLogger, audit_middleware};
-use encryption::{EncryptionService, SharedEncryptionService, encrypt_json_middleware};
+use encryption::{EncryptionService, SharedEncryptionService, encrypt_json_middleware, decrypt_json_middleware};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -136,11 +136,18 @@ async fn main() -> Result<()> {
         .allow_origin(Any);
 
     // Build the application with routes
+    // Middleware executes in reverse order of addition (first added = last executed)
     let app = Router::new()
         .route("/*path", any(proxy_handler))
+        // Middleware order (from outermost to innermost):
+        // 1. Decrypt Response - transforms CouchDB responses by decrypting encrypted JSON properties
+        // 2. Encrypt Request - transforms request bodies by encrypting JSON properties
+        // 3. Auth - authenticates requests before they reach the encryption stage
+        // 4. Audit - logs all requests after auth but before encryption
+        .layer(middleware::from_fn_with_state(app_state.clone(), decrypt_json_middleware))
         .layer(middleware::from_fn_with_state(app_state.clone(), encrypt_json_middleware))
-        .layer(middleware::from_fn_with_state(app_state.clone(), audit_middleware))
         .layer(middleware::from_fn_with_state(app_state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(app_state.clone(), audit_middleware))
         .with_state(app_state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);

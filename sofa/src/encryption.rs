@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use axum::{
     body::{Body, Bytes},
     extract::{Request, State},
-    http::{Method, StatusCode, Uri},
+    http::{Method, StatusCode, Uri, HeaderName, HeaderValue},
     middleware::Next,
     response::Response,
     BoxError,
@@ -356,6 +356,222 @@ async fn encrypt_json_properties(
     }
 }
 
+/// Middleware to decrypt JSON properties in response bodies
+pub async fn decrypt_json_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // First check if the encryption service is available
+    let encryption_service = match &state.encryption_service {
+        Some(service) => service,
+        None => {
+            // If encryption is not enabled, just pass through
+            debug!("Encryption service not available, skipping decryption middleware");
+            return next.run(req).await;
+        }
+    };
+
+    // Get request path to check if it matches any encrypted_endpoints
+    let path = req.uri().path();
+    
+    // Check if this path matches any of the encrypted_endpoints patterns
+    let should_decrypt = state.config.encrypted_endpoints.iter().any(|pattern| {
+        match Regex::new(pattern) {
+            Ok(regex) => regex.is_match(path),
+            Err(e) => {
+                warn!("Invalid regex pattern '{}': {}", pattern, e);
+                false
+            }
+        }
+    });
+
+    if !should_decrypt {
+        // Path doesn't match any encryption patterns, pass through
+        debug!("Path {} doesn't require decryption, skipping", path);
+        return next.run(req).await;
+    }
+
+    debug!("Will decrypt response for path: {}", path);
+
+    // Process the request and get the response
+    let mut response = next.run(req).await;
+    
+    // Check content type of response
+    let is_json_response = response.headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.contains("application/json") || 
+            s.contains("text/json") || 
+            s.contains("+json")
+        })
+        .unwrap_or(false);
+
+    if !is_json_response {
+        // Not JSON, pass through unchanged
+        debug!("Response is not JSON, skipping decryption");
+        return response;
+    }
+
+    // Extract the response body
+    let body = response.body_mut();
+    let bytes = match body_to_bytes(body).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!("Failed to read response body: {}", e);
+            return response;
+        }
+    };
+
+    if bytes.is_empty() {
+        debug!("Empty response body, skipping decryption");
+        return response;
+    }
+
+    // Try to parse as JSON
+    match serde_json::from_slice::<Value>(&bytes) {
+        Ok(json) => {
+            debug!("Successfully parsed JSON response body");
+            
+            // Decrypt JSON properties
+            match decrypt_json_properties(&json, encryption_service).await {
+                Ok(decrypted_json) => {
+                    debug!("Successfully decrypted JSON properties");
+                    
+                    // Convert back to string
+                    let json_string = serde_json::to_string(&decrypted_json)
+                        .unwrap_or_else(|_| String::from("{}"));
+                    
+                    // Create a new response with the decrypted body
+                    let status = response.status();
+                    let mut builder = Response::builder().status(status);
+                    
+                    // Copy all headers from the original response
+                    if let Some(headers) = builder.headers_mut() {
+                        headers.extend(
+                            response.headers()
+                                .iter()
+                                .filter(|(k, _)| k.as_str() != "content-length")
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                        );
+                    }
+                    
+                    // Set the content-length for the new response
+                    if let Some(headers) = builder.headers_mut() {
+                        if let Ok(len_value) = HeaderValue::from_str(&json_string.len().to_string()) {
+                            headers.insert(
+                                HeaderName::from_static("content-length"), 
+                                len_value
+                            );
+                        }
+                    }
+                    
+                    // Return the new response with decrypted body
+                    builder
+                        .body(Body::from(json_string))
+                        .unwrap_or(response)
+                },
+                Err(e) => {
+                    error!("Failed to decrypt JSON properties: {}", e);
+                    response
+                }
+            }
+        },
+        Err(e) => {
+            warn!("Response body is not valid JSON: {}", e);
+            response
+        }
+    }
+}
+
+/// Decrypt JSON properties recursively
+async fn decrypt_json_properties(
+    json_value: &Value, 
+    encryption_service: &EncryptionService
+) -> Result<Value> {
+    match json_value {
+        Value::Object(map) => {
+            let mut decrypted_map = serde_json::Map::new();
+            
+            for (key, value) in map {
+                // Check if this is an encrypted property (starts with $$)
+                if key.starts_with("$$") {
+                    // Extract the original property name
+                    let original_key = key.trim_start_matches("$$");
+                    
+                    // Handle string values which are encrypted
+                    if let Value::String(encrypted) = value {
+                        match encryption_service.decrypt(encrypted).await {
+                            Ok(decrypted_str) => {
+                                // Parse the decrypted string back to JSON if possible
+                                match serde_json::from_str::<Value>(&decrypted_str) {
+                                    Ok(json_value) => {
+                                        // Successfully parsed as JSON, use the parsed value
+                                        decrypted_map.insert(original_key.to_string(), json_value);
+                                    },
+                                    Err(_) => {
+                                        // Not valid JSON, use as string
+                                        decrypted_map.insert(original_key.to_string(), Value::String(decrypted_str));
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                error!("Failed to decrypt property '{}': {}", key, e);
+                                // Keep original on error
+                                decrypted_map.insert(key.clone(), value.clone());
+                            }
+                        }
+                    } else if let Value::Object(_) | Value::Array(_) = value {
+                        // Recursively process nested objects and arrays
+                        let future = Box::pin(decrypt_json_properties(value, encryption_service));
+                        let decrypted_value = future.await?;
+                        decrypted_map.insert(original_key.to_string(), decrypted_value);
+                    } else {
+                        // For non-string, non-nested values, just copy as is
+                        decrypted_map.insert(original_key.to_string(), value.clone());
+                    }
+                } else {
+                    // Not an encrypted property, process normally
+                    if let Value::Object(_) | Value::Array(_) = value {
+                        // Recursively process nested objects and arrays
+                        let future = Box::pin(decrypt_json_properties(value, encryption_service));
+                        let decrypted_value = future.await?;
+                        decrypted_map.insert(key.clone(), decrypted_value);
+                    } else {
+                        // Copy non-objects/arrays as is
+                        decrypted_map.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            
+            Ok(Value::Object(decrypted_map))
+        },
+        Value::Array(items) => {
+            // For arrays, decrypt each item recursively
+            let mut decrypted_items = Vec::new();
+            
+            for item in items {
+                match item {
+                    Value::Object(_) | Value::Array(_) => {
+                        // Recursively process nested objects and arrays
+                        let future = Box::pin(decrypt_json_properties(item, encryption_service));
+                        decrypted_items.push(future.await?);
+                    },
+                    _ => {
+                        // Add non-objects/arrays as is
+                        decrypted_items.push(item.clone());
+                    }
+                }
+            }
+            
+            Ok(Value::Array(decrypted_items))
+        },
+        // Return other values as is
+        _ => Ok(json_value.clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,5 +652,99 @@ mod tests {
         assert_eq!(tags.len(), 2);
         assert_eq!(tags[0], "user"); // Arrays of primitives are not encrypted
         assert_eq!(tags[1], "active");
+    }
+    
+    #[tokio::test]
+    async fn test_decrypt_json_properties() {
+        // Create an encryption service
+        let service = EncryptionService::new();
+        service.initialize("test-master-key-for-unit-testing").await.unwrap();
+        
+        // Start with a normal JSON object
+        let original = json!({
+            "_id": "doc1",
+            "$meta": "metadata",
+            "name": "John Doe",
+            "age": 30,
+            "details": {
+                "address": "123 Main St",
+                "_private": "secret",
+                "contacts": [
+                    { "type": "email", "value": "john@example.com" },
+                    { "type": "phone", "value": "555-1234" }
+                ]
+            },
+            "tags": ["user", "active"]
+        });
+        
+        // Encrypt the JSON
+        let encrypted = encrypt_json_properties(&original, &service).await.unwrap();
+        
+        // Now decrypt the JSON
+        let decrypted = decrypt_json_properties(&encrypted, &service).await.unwrap();
+        
+        // Verify that original properties and values are restored
+        assert_eq!(decrypted["_id"], original["_id"]);
+        assert_eq!(decrypted["$meta"], original["$meta"]);
+        assert_eq!(decrypted["name"], original["name"]);
+        assert_eq!(decrypted["age"], original["age"]);
+        
+        // Check nested objects
+        assert!(decrypted["details"].is_object());
+        assert_eq!(decrypted["details"]["_private"], original["details"]["_private"]);
+        assert_eq!(decrypted["details"]["address"], original["details"]["address"]);
+        
+        // Check nested arrays
+        assert!(decrypted["details"]["contacts"].is_array());
+        assert_eq!(decrypted["details"]["contacts"].as_array().unwrap().len(), 2);
+        assert_eq!(decrypted["details"]["contacts"][0]["type"], original["details"]["contacts"][0]["type"]);
+        assert_eq!(decrypted["details"]["contacts"][0]["value"], original["details"]["contacts"][0]["value"]);
+        assert_eq!(decrypted["details"]["contacts"][1]["type"], original["details"]["contacts"][1]["type"]);
+        assert_eq!(decrypted["details"]["contacts"][1]["value"], original["details"]["contacts"][1]["value"]);
+        
+        // Check top-level arrays
+        assert!(decrypted["tags"].is_array());
+        assert_eq!(decrypted["tags"], original["tags"]);
+    }
+    
+    #[tokio::test]
+    async fn test_encrypt_decrypt_roundtrip() {
+        // Create an encryption service
+        let service = EncryptionService::new();
+        service.initialize("test-master-key-for-unit-testing").await.unwrap();
+        
+        // Test various data types
+        let original = json!({
+            "string": "Hello, World!",
+            "number": 42,
+            "boolean": true,
+            "null": null,
+            "object": { "nested": "value" },
+            "array": [1, 2, 3],
+            "mixed_array": [1, "two", true, { "key": "value" }]
+        });
+        
+        // Encrypt then decrypt
+        let encrypted = encrypt_json_properties(&original, &service).await.unwrap();
+        let decrypted = decrypt_json_properties(&encrypted, &service).await.unwrap();
+        
+        // Verify roundtrip works for all data types
+        assert_eq!(decrypted["string"], original["string"]);
+        assert_eq!(decrypted["number"], original["number"]);
+        assert_eq!(decrypted["boolean"], original["boolean"]);
+        assert_eq!(decrypted["null"], original["null"]);
+        
+        assert_eq!(decrypted["object"]["nested"], original["object"]["nested"]);
+        
+        assert_eq!(decrypted["array"].as_array().unwrap().len(), 3);
+        assert_eq!(decrypted["array"][0], original["array"][0]);
+        assert_eq!(decrypted["array"][1], original["array"][1]);
+        assert_eq!(decrypted["array"][2], original["array"][2]);
+        
+        assert_eq!(decrypted["mixed_array"].as_array().unwrap().len(), 4);
+        assert_eq!(decrypted["mixed_array"][0], original["mixed_array"][0]);
+        assert_eq!(decrypted["mixed_array"][1], original["mixed_array"][1]);
+        assert_eq!(decrypted["mixed_array"][2], original["mixed_array"][2]);
+        assert_eq!(decrypted["mixed_array"][3]["key"], original["mixed_array"][3]["key"]);
     }
 } 
