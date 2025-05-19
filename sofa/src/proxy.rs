@@ -11,20 +11,32 @@ use tracing::{debug, error, info};
 
 use crate::config::AppConfig;
 use crate::audit::AuditLogger;
+use crate::encryption::SharedEncryptionService;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
     pub client: Arc<Client>,
     pub audit_logger: Option<AuditLogger>,
+    pub encryption_service: Option<SharedEncryptionService>,
 }
 
 impl AppState {
-    pub fn new(config: AppConfig, client: Arc<Client>, audit_logger: Option<AuditLogger>) -> Self {
+    pub fn new(
+        config: AppConfig, 
+        client: Arc<Client>, 
+        audit_logger: Option<AuditLogger>,
+        encryption_service: Option<SharedEncryptionService>,
+    ) -> Self {
         // Log the CouchDB URL for debugging
         info!("Creating AppState with CouchDB URL: {}", config.couchdb_url);
         
-        Self { config, client, audit_logger }
+        Self { 
+            config, 
+            client, 
+            audit_logger,
+            encryption_service,
+        }
     }
 }
 

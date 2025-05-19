@@ -2,6 +2,7 @@ mod config;
 mod proxy;
 mod auth;
 mod audit;
+mod encryption;
 
 use anyhow::Result;
 use axum::{
@@ -14,7 +15,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{debug, info, Level};
+use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use reqwest::Client;
 
@@ -22,6 +23,7 @@ use auth::auth_middleware;
 use config::AppConfig;
 use proxy::{proxy_handler, AppState};
 use audit::{AuditLogger, audit_middleware};
+use encryption::{EncryptionService, SharedEncryptionService, encrypt_json_middleware};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -80,6 +82,34 @@ async fn main() -> Result<()> {
             info!("Audit log service URL is not set");
         }
     }
+    
+    // Log encryption configuration
+    if let Some(_) = &config.master_enc_key {
+        info!("Encryption enabled with master key");
+        if !config.encrypted_endpoints.is_empty() {
+            info!("Encrypted endpoints: {}", config.encrypted_endpoints.join(", "));
+        } else {
+            info!("No encrypted endpoints configured");
+        }
+    } else {
+        info!("Encryption disabled (no master key provided)");
+    }
+
+    // Initialize encryption service if master key is provided
+    let encryption_service = if let Some(master_key) = &config.master_enc_key {
+        info!("Initializing encryption service with master key");
+        let service = Arc::new(EncryptionService::new());
+        if let Err(e) = service.initialize(master_key).await {
+            error!("Failed to initialize encryption service: {}", e);
+            None
+        } else {
+            info!("Encryption service initialized successfully");
+            Some(service as SharedEncryptionService)
+        }
+    } else {
+        info!("No master encryption key provided, encryption disabled");
+        None
+    };
 
     // Create HTTP client
     let client = Arc::new(Client::new());
@@ -92,7 +122,12 @@ async fn main() -> Result<()> {
     };
 
     // Create application state
-    let app_state = Arc::new(AppState::new(config.clone(), client, audit_logger));
+    let app_state = Arc::new(AppState::new(
+        config.clone(),
+        client,
+        audit_logger,
+        encryption_service,
+    ));
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -103,8 +138,9 @@ async fn main() -> Result<()> {
     // Build the application with routes
     let app = Router::new()
         .route("/*path", any(proxy_handler))
-        .layer(middleware::from_fn_with_state(app_state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(app_state.clone(), encrypt_json_middleware))
         .layer(middleware::from_fn_with_state(app_state.clone(), audit_middleware))
+        .layer(middleware::from_fn_with_state(app_state.clone(), auth_middleware))
         .with_state(app_state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);
