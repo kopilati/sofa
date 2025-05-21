@@ -15,6 +15,8 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+RUN mkdir -p /app/config
+COPY ./config/*.yaml /app/config/
 
 # Copy the binary from the builder stage
 COPY --from=builder /usr/src/sofa/target/release/sofa /app/sofa
@@ -30,7 +32,7 @@ ENV SOFA_COUCHDB_PASSWORD=password
 ENV CONFIG_DIR=/app/config
 
 # OAuth2 configuration (disabled by default)
-ENV SOFA_AUTH_ENABLED=false
+
 # ENV SOFA_AUTH_ISSUER=https://your-auth-server.com
 # ENV SOFA_AUTH_AUDIENCE=your-api-audience
 # ENV SOFA_AUTH_JWKS_URL=https://your-auth-server.com/.well-known/jwks.json

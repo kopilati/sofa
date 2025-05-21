@@ -183,7 +183,7 @@ pub async fn encrypt_json_middleware(
     let path = req.uri().path();
     
     // Check if this path matches any of the encrypted_endpoints patterns
-    let should_encrypt = state.config.encrypted_endpoints.iter().any(|pattern| {
+    let should_encrypt = state.config.encryption.endpoints.iter().any(|pattern| {
         match Regex::new(pattern) {
             Ok(regex) => regex.is_match(path),
             Err(e) => {
@@ -376,7 +376,7 @@ pub async fn decrypt_json_middleware(
     let path = req.uri().path();
     
     // Check if this path matches any of the encrypted_endpoints patterns
-    let should_decrypt = state.config.encrypted_endpoints.iter().any(|pattern| {
+    let should_decrypt = state.config.encryption.endpoints.iter().any(|pattern| {
         match Regex::new(pattern) {
             Ok(regex) => regex.is_match(path),
             Err(e) => {

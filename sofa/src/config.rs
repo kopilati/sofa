@@ -1,30 +1,186 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
-use config::{Config, ConfigError, File};
+use config::{Config, ConfigError, File, Environment};
+use tracing::{debug, info, warn, error};
 
+// Server configuration settings
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct AppConfig {
-    pub couchdb_url: String,
-    pub couchdb_username: String,
-    pub couchdb_password: String,
-    pub server_port: u16,
-    pub auth: AuthConfig,
-    pub audit_log_service_url: Option<String>,
-    pub audit_enabled: bool,
-    pub master_enc_key: Option<String>,
-    pub encrypted_endpoints: Vec<String>,
+pub struct ServerSettings {
+    pub port: u16,
 }
 
+// CouchDB connection settings
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct AuthConfig {
+pub struct CouchDBSettings {
+    pub url: String,
+    pub username: String,
+    pub password: String,
+}
+
+// Authentication settings
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AuthSettings {
     pub enabled: bool,
     pub issuer: Option<String>,
     pub audience: Option<String>,
     pub jwks_url: Option<String>,
 }
 
-impl Default for AuthConfig {
+// Audit logging settings
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AuditSettings {
+    pub enabled: bool,
+    pub service_url: Option<String>,
+}
+
+// Encryption settings
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct EncryptionSettings {
+    pub master_key: Option<String>,
+    pub endpoints: Vec<String>,
+}
+
+// Main application configuration
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AppConfig {
+    pub server: ServerSettings,
+    pub couchdb: CouchDBSettings,
+    pub auth: AuthSettings,
+    pub audit: AuditSettings,
+    pub encryption: EncryptionSettings,
+}
+
+// For compatibility with the rest of the code
+impl AppConfig {
+    // Helper method to get CouchDB URL directly (for backward compatibility)
+    pub fn couchdb_url(&self) -> &str {
+        &self.couchdb.url
+    }
+    
+    // Helper method to get CouchDB username directly (for backward compatibility)
+    pub fn couchdb_username(&self) -> &str {
+        &self.couchdb.username
+    }
+    
+    // Helper method to get CouchDB password directly (for backward compatibility)
+    pub fn couchdb_password(&self) -> &str {
+        &self.couchdb.password
+    }
+    
+    // Helper method to get server port directly (for backward compatibility)
+    pub fn server_port(&self) -> u16 {
+        self.server.port
+    }
+    
+    // Helper method to check if audit is enabled (for backward compatibility)
+    pub fn audit_enabled(&self) -> bool {
+        self.audit.enabled
+    }
+    
+    // Helper method to get audit service URL (for backward compatibility)
+    pub fn audit_log_service_url(&self) -> Option<&String> {
+        self.audit.service_url.as_ref()
+    }
+    
+    // Helper method to get master encryption key (for backward compatibility)
+    pub fn master_enc_key(&self) -> Option<&String> {
+        self.encryption.master_key.as_ref()
+    }
+    
+    // Helper method to get encrypted endpoints (for backward compatibility)
+    pub fn encrypted_endpoints(&self) -> &Vec<String> {
+        &self.encryption.endpoints
+    }
+    
+    // Load configuration from files and environment variables
+    pub fn load() -> Result<Self, ConfigError> {
+        // Load .env file if it exists
+        let _ = dotenv::dotenv();
+        
+        let env_name = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
+        let config_dir = env::var("CONFIG_DIR").unwrap_or_else(|_| "./config".to_string());
+        
+        info!("Loading configuration for environment: {}", env_name);
+        debug!("Configuration directory: {}", config_dir);
+        
+        // Build configuration, starting with defaults and merging in other sources
+        let builder = Config::builder()
+            // Start with default config file (must exist)
+            .add_source(File::from(PathBuf::from(format!("{}/defaults.yaml", config_dir))).required(false))
+            // Add environment-specific config if exists
+            .add_source(File::from(PathBuf::from(format!("{}/{}.yaml", config_dir, env_name))).required(false))
+            // Add local overrides if exists (not committed to version control)
+            .add_source(File::from(PathBuf::from(format!("{}/local.yaml", config_dir))).required(false))
+            // Add environment variables with prefix SOFA_
+            .add_source(
+                Environment::with_prefix("SOFA")
+                    .separator("_")
+                    .try_parsing(true)
+                    .list_separator(",")
+                    // We need to correctly map nested keys
+                    .with_list_parse_key("encryption_endpoints")
+            );
+        
+        // Build and deserialize
+        let config = match builder.build() {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to build configuration: {}", e);
+                return Err(e);
+            }
+        };
+        
+        // Try to deserialize the configuration to our AppConfig struct
+        let app_config: AppConfig = match config.try_deserialize() {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to deserialize configuration: {}", e);
+                return Err(e);
+            }
+        };
+        let ac = app_config.clone();
+        // Print key configuration values for debugging
+        debug!("Loaded configuration:");
+        debug!("CouchDB URL: {}", app_config.couchdb.url);
+        debug!("Server Port: {}", app_config.server.port);
+        debug!("Auth Enabled: {}", app_config.auth.enabled);
+        if app_config.auth.enabled {
+            debug!("Auth Issuer: {}", app_config.auth.issuer.unwrap_or_default());
+            debug!("Auth Audience: {}", app_config.auth.audience.unwrap_or_default());
+            debug!("Auth JWKS URL: {}", app_config.auth.jwks_url.unwrap_or_default());
+        }
+        debug!("Audit Enabled: {}", app_config.audit.enabled);
+        if let Some(url) = &app_config.audit.service_url {
+            debug!("Audit Service URL: {}", url);
+        }
+        debug!("Encryption Enabled: {}", app_config.encryption.master_key.is_some());
+        debug!("Encrypted Endpoints: {:?}", app_config.encryption.endpoints);
+        
+        Ok(ac)
+    }
+}
+
+// For backward compatibility with existing code
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self {
+            port: 3000,
+        }
+    }
+}
+
+impl Default for CouchDBSettings {
+    fn default() -> Self {
+        Self {
+            url: "http://localhost:5984".to_string(),
+            username: "admin".to_string(),
+            password: "password".to_string(),
+        }
+    }
+}
+
+impl Default for AuthSettings {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -35,97 +191,32 @@ impl Default for AuthConfig {
     }
 }
 
-impl Default for AppConfig {
+impl Default for AuditSettings {
     fn default() -> Self {
         Self {
-            couchdb_url: "http://localhost:5984".to_string(),
-            couchdb_username: "admin".to_string(),
-            couchdb_password: "password".to_string(),
-            server_port: 3000,
-            auth: AuthConfig::default(),
-            audit_log_service_url: None,
-            audit_enabled: false,
-            master_enc_key: None,
-            encrypted_endpoints: Vec::new(),
+            enabled: false,
+            service_url: None,
         }
     }
 }
 
-impl AppConfig {
-    pub fn load() -> Result<Self, ConfigError> {
-        // Load .env file if it exists
-        let _ = dotenv::dotenv();
-        
-        let config_dir = env::var("CONFIG_DIR").unwrap_or_else(|_| "./config".to_string());
-        
-        let builder = Config::builder()
-            // Start with default values
-            .add_source(config::Config::try_from(&AppConfig::default())?)
-            // Add in settings from the environment (with a prefix of SOFA)
-            // E.g. `SOFA_COUCHDB_URL=foo ./target/app` would set the `couchdb_url` key
-            .add_source(config::Environment::with_prefix("SOFA").separator("_"))
-            // Attempt to load config file if present
-            .add_source(File::from(PathBuf::from(format!("{}/config", config_dir))).required(false));
+impl Default for EncryptionSettings {
+    fn default() -> Self {
+        Self {
+            master_key: None,
+            endpoints: Vec::new(),
+        }
+    }
+}
 
-        // Build and attempt to deserialize to our Config type
-        let mut config: AppConfig = builder.build()?.try_deserialize()?;
-        
-        // Explicitly check and set environment variables for couchdb url
-        if let Ok(couchdb_url) = env::var("SOFA_COUCHDB_URL") {
-            config.couchdb_url = couchdb_url;
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            server: ServerSettings::default(),
+            couchdb: CouchDBSettings::default(),
+            auth: AuthSettings::default(),
+            audit: AuditSettings::default(),
+            encryption: EncryptionSettings::default(),
         }
-        
-        // Also explicitly handle username and password
-        if let Ok(couchdb_username) = env::var("SOFA_COUCHDB_USERNAME") {
-            config.couchdb_username = couchdb_username;
-        }
-        
-        if let Ok(couchdb_password) = env::var("SOFA_COUCHDB_PASSWORD") {
-            config.couchdb_password = couchdb_password;
-        }
-        
-        // Explicitly check and set environment variables for auth config
-        // This is to workaround potential issues with nested config structures
-        if let Ok(enabled) = env::var("SOFA_AUTH_ENABLED") {
-            config.auth.enabled = enabled.to_lowercase() == "true";
-        }
-        
-        if let Ok(issuer) = env::var("SOFA_AUTH_ISSUER") {
-            config.auth.issuer = Some(issuer);
-        }
-        
-        if let Ok(audience) = env::var("SOFA_AUTH_AUDIENCE") {
-            config.auth.audience = Some(audience);
-        }
-        
-        if let Ok(jwks_url) = env::var("SOFA_AUTH_JWKS_URL") {
-            config.auth.jwks_url = Some(jwks_url);
-        }
-        
-        // Handle audit configuration
-        if let Ok(audit_enabled) = env::var("SOFA_AUDIT_ENABLED") {
-            config.audit_enabled = audit_enabled.to_lowercase() == "true";
-        }
-        
-        if let Ok(audit_url) = env::var("SOFA_AUDIT_LOG_SERVICE_URL") {
-            config.audit_log_service_url = Some(audit_url);
-        }
-        
-        // Handle master encryption key
-        if let Ok(master_key) = env::var("SOFA_MASTER_ENC_KEY") {
-            config.master_enc_key = Some(master_key);
-        }
-        
-        // Handle encrypted endpoints
-        if let Ok(endpoints) = env::var("SOFA_ENCRYPTED_ENDPOINTS") {
-            // Split by comma and trim each entry
-            config.encrypted_endpoints = endpoints
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-        }
-        
-        Ok(config)
     }
 } 

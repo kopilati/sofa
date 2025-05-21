@@ -29,7 +29,7 @@ impl AppState {
         encryption_service: Option<SharedEncryptionService>,
     ) -> Self {
         // Log the CouchDB URL for debugging
-        info!("Creating AppState with CouchDB URL: {}", config.couchdb_url);
+        info!("Creating AppState with CouchDB URL: {}", config.couchdb.url);
         
         Self { 
             config, 
@@ -52,7 +52,7 @@ pub async fn proxy_handler(
     let cleaned_path = path_str.trim_start_matches('/');
     
     // Ensure CouchDB URL doesn't end with a slash
-    let base_url = state.config.couchdb_url.trim_end_matches('/');
+    let base_url = state.config.couchdb.url.trim_end_matches('/');
     
     // Construct the target URL with proper path handling
     let target_url = if cleaned_path.is_empty() {
@@ -70,8 +70,8 @@ pub async fn proxy_handler(
     debug!("Base CouchDB URL: {}", base_url);
     debug!("Final target URL: {}", target_url);
     debug!("CouchDB credentials - Username: {}, Password: {}", 
-           state.config.couchdb_username, 
-           "*".repeat(state.config.couchdb_password.len()));
+           state.config.couchdb.username, 
+           "*".repeat(state.config.couchdb.password.len()));
     
     // Debug all headers
     debug!("Request headers:");
@@ -119,10 +119,10 @@ pub async fn proxy_handler(
     let mut client_req = state.client.request(reqwest_method.clone(), &target_url);
     
     // Add basic auth
-    debug!("Adding basic auth with username: {}", state.config.couchdb_username);
+    debug!("Adding basic auth with username: {}", state.config.couchdb.username);
     client_req = client_req.basic_auth(
-        &state.config.couchdb_username,
-        Some(&state.config.couchdb_password),
+        &state.config.couchdb.username,
+        Some(&state.config.couchdb.password),
     );
     
     // Copy headers from original request to proxy request, excluding authorization

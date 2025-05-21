@@ -5,6 +5,7 @@ metadata:
 data:
   realm.json: |
     {
+      "realm": "sofa",
       "clientScopes": [
         {
           "name": "topology-http-methods",

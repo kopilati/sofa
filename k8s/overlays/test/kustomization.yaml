@@ -6,9 +6,12 @@ namePrefix: test-
 resources:
 - ../../base
 - test-client.yaml
+- sofa-secrets.yaml
 
 patchesStrategicMerge:
 - sofa-config-patch.yaml
+- keycloak-service-patch.yaml
+- keycloak-deployment-patch.yaml
 
 images:
 - name: sofa

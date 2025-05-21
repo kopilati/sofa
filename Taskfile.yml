@@ -3,10 +3,13 @@ version: '3'
 vars:
   CLUSTER_NAME: sofa-test
   IMAGE_NAME: sofa:latest
+  AUDIT_IMAGE_NAME: audit-service:latest
   NAMESPACE: default
   SOFA_PORT: 30081
   KEYCLOAK_PORT: 30082
+  AUDIT_PORT: 30083
   ENVIRONMENT: dev # default environment
+  SOFA_URL: http://localhost:{{.SOFA_PORT}}
 
 tasks:
   build:
@@ -14,6 +17,12 @@ tasks:
     cmds:
     - echo "Building Sofa Docker image..."
     - docker build -t {{.IMAGE_NAME}} ./sofa
+
+  build-audit:
+    desc: Build the Audit Service Docker image
+    cmds:
+    - echo "Building Audit Service Docker image..."
+    - docker build -t {{.AUDIT_IMAGE_NAME}} ./audit-service
 
   rollout:
     desc: Build Sofa, load the image into Kind, and rollout the deployment
@@ -24,6 +33,26 @@ tasks:
     - kubectl rollout restart deployment/{{.ENVIRONMENT}}-sofa
     - kubectl wait --for=condition=available deployment/{{.ENVIRONMENT}}-sofa --timeout=60s
     - echo "Sofa has been rebuilt and deployed"
+
+  rollout-audit:
+    desc: Build Audit Service, load the image into Kind, and rollout the deployment
+    cmds:
+    - echo "Building and rolling out Audit Service..."
+    - task: build-audit
+    - kind load docker-image {{.AUDIT_IMAGE_NAME}} --name {{.CLUSTER_NAME}}
+    - kubectl apply -f ./audit-service/k8s/audit-service.yaml
+    - kubectl wait --for=condition=available deployment/{{.ENVIRONMENT}}-audit-service --timeout=60s
+    - echo "Audit Service has been rebuilt and deployed"
+
+  port-forward-audit:
+    desc: Set up port forwarding for Audit Service only
+    cmds:
+    - |
+      echo "Setting up port forwarding for Audit Service..."
+      echo "Audit Service will be available at: http://localhost:{{.AUDIT_PORT}}"
+      echo ""
+      echo "Press Ctrl+C to stop port forwarding"
+      kubectl port-forward svc/{{.ENVIRONMENT}}-audit-service {{.AUDIT_PORT}}:80
 
   create-cluster:
     desc: Create a Kind cluster if it doesn't exist
@@ -43,6 +72,13 @@ tasks:
     - echo "Loading Sofa image into Kind cluster..."
     - kind load docker-image {{.IMAGE_NAME}} --name {{.CLUSTER_NAME}}
 
+  load-audit-image:
+    desc: Load the Audit Service image into the Kind cluster
+    deps: [ build-audit, create-cluster ]
+    cmds:
+    - echo "Loading Audit Service image into Kind cluster..."
+    - kind load docker-image {{.AUDIT_IMAGE_NAME}} --name {{.CLUSTER_NAME}}
+
   apply-manifests:
     desc: Apply all Kubernetes manifests using Kustomize
     deps: [ load-image ]
@@ -57,6 +93,17 @@ tasks:
 
       echo "Services are available in the cluster. Use port-forwarding to access them."
       echo "Run 'task port-forward' to access the services."
+
+  enable-audit:
+    desc: Enable audit logging in SOFA by configuring it to use the audit service
+    cmds:
+    - |
+      echo "Patching SOFA configuration to enable audit logging..."
+      kubectl patch configmap {{.ENVIRONMENT}}-sofa-config -p '{"data":{"audit_enabled":"true","audit_log_service_url":"http://{{.ENVIRONMENT}}-audit-service/audit"}}'
+      echo "Restarting SOFA to apply changes..."
+      kubectl rollout restart deployment/{{.ENVIRONMENT}}-sofa
+      kubectl wait --for=condition=available deployment/{{.ENVIRONMENT}}-sofa --timeout=60s
+      echo "Audit logging has been enabled in SOFA"
 
   port-forward:
     desc: Set up port forwarding for both Sofa and Keycloak
@@ -84,6 +131,36 @@ tasks:
       echo "Port forwarding active. Press Ctrl+C to exit."
       tail -f /dev/null
 
+  port-forward-all:
+    desc: Set up port forwarding for Sofa, Keycloak, and Audit Service
+    cmds:
+    - |
+      echo "Setting up port forwarding for Sofa, Keycloak, and Audit Service..."
+      echo "Sofa will be available at: http://localhost:{{.SOFA_PORT}}"
+      echo "Keycloak will be available at: http://localhost:{{.KEYCLOAK_PORT}}"
+      echo "Audit Service will be available at: http://localhost:{{.AUDIT_PORT}}"
+      echo "Keycloak admin console: http://localhost:{{.KEYCLOAK_PORT}}/admin (admin/admin)"
+      echo ""
+      echo "Press Ctrl+C to stop port forwarding"
+      echo ""
+
+      # Start port forwards in background
+      kubectl port-forward svc/{{.ENVIRONMENT}}-sofa-service {{.SOFA_PORT}}:80 & 
+      SOFA_PF_PID=$!
+
+      kubectl port-forward svc/{{.ENVIRONMENT}}-keycloak-service {{.KEYCLOAK_PORT}}:8080 &
+      KC_PF_PID=$!
+
+      kubectl port-forward svc/{{.ENVIRONMENT}}-audit-service {{.AUDIT_PORT}}:80 &
+      AUDIT_PF_PID=$!
+
+      # Set up trap to kill background processes on exit
+      trap "kill $SOFA_PF_PID $KC_PF_PID $AUDIT_PF_PID" EXIT INT TERM
+
+      # Keep script running
+      echo "Port forwarding active. Press Ctrl+C to exit."
+      tail -f /dev/null
+
   port-forward-sofa:
     desc: Set up port forwarding for Sofa only
     cmds:
@@ -105,35 +182,12 @@ tasks:
       echo "Press Ctrl+C to stop port forwarding"
       kubectl port-forward svc/{{.ENVIRONMENT}}-keycloak-service {{.KEYCLOAK_PORT}}:8080
 
-  run-test:
-    desc: Run the OAuth2 test client directly against the cluster
-    deps: [ apply-manifests ]
-    cmds:
-    - |
-      echo "Applying test environment manifests and test client..."
-      kubectl apply -k k8s/overlays/test
-
-      echo "Waiting for test job to complete..."
-      kubectl wait --for=condition=complete job/test-sofa-test-client --timeout=60s || true
-
-      # Show logs from the test job
-      echo "Test job logs:"
-      kubectl logs job/test-sofa-test-client
-
-  run-test-local:
-    desc: Run the OAuth2 test client locally (requires port-forwarding)
-    cmds:
-    - |
-      export SOFA_URL="http://localhost:{{.SOFA_PORT}}"
-      export CLIENT_ID="sofa-client"
-      export CLIENT_SECRET="sofa-client-secret"
-      cargo run --bin oauth_client
-
   setup:
     desc: Complete setup - build, create cluster, load image, and apply manifests
     deps: [ load-image, apply-manifests ]
     cmds:
     - |
+      # Skip Keycloak connectivity checks during setup for now
       echo "Setup complete!"
       echo "To access the services, run: task port-forward"
       echo ""
@@ -145,6 +199,17 @@ tasks:
       echo "  http://localhost:{{.KEYCLOAK_PORT}}/admin"
       echo "  Username: admin"
       echo "  Password: admin"
+
+  setup-audit:
+    desc: Setup and deploy the audit service
+    deps: [ load-audit-image ]
+    cmds:
+    - |
+      echo "Applying Audit Service manifests..."
+      kubectl apply -f ./audit-service/k8s/audit-service.yaml
+      kubectl wait --for=condition=available deployment/{{.ENVIRONMENT}}-audit-service --timeout=60s
+      echo "Audit Service setup complete! Run 'task enable-audit' to configure SOFA to use it."
+      echo "You can access the Audit Service at: http://localhost:{{.AUDIT_PORT}} (after running port-forward-audit)"
 
   keycloak-ready:
     desc: Check if Keycloak is ready and properly configured
@@ -192,6 +257,709 @@ tasks:
     cmds:
     - |
       echo "Current environment: {{.ENVIRONMENT}}"
+
+  # CouchDB Operations Tasks
+  create-database:
+    silent: true
+    desc: Create a database in CouchDB with authentication (requires port-forwarding)
+    cmds:
+    - |
+      # Parse arguments
+      SKIP_CHECKS=false
+      ARGS=()
+      for arg in {{.CLI_ARGS}}; do
+        if [ "$arg" = "--skip-checks" ]; then
+          SKIP_CHECKS=true
+        else
+          ARGS+=("$arg")
+        fi
+      done
+
+      if [ ${#ARGS[@]} -lt 1 ]; then
+        echo "Usage: task create-database -- <database_name> [--skip-checks]"
+        echo "Example: task create-database -- my_database"
+        exit 1
+      fi
+
+      DB_NAME=${ARGS[0]}
+      echo "Creating database '$DB_NAME'..."
+
+      # Check if Sofa port-forwarding is active using ps
+      if [ "$SKIP_CHECKS" = "false" ]; then
+        echo "Checking if Sofa port-forwarding is active..."
+        if ps aux | grep -v grep | grep "kubectl port-forward.*{{.ENVIRONMENT}}-sofa-service.*{{.SOFA_PORT}}:80" > /dev/null; then
+          echo "✅ Sofa port-forwarding is already active"
+        else
+          echo "❌ Sofa port-forwarding is not active. Will attempt to start port-forwarding..."
+          
+          # Check if the service exists before attempting port-forwarding
+          echo "Checking if {{.ENVIRONMENT}}-sofa-service exists..."
+          if ! kubectl get svc {{.ENVIRONMENT}}-sofa-service &>/dev/null; then
+            echo "❌ Service {{.ENVIRONMENT}}-sofa-service does not exist!"
+            echo "Current environment: {{.ENVIRONMENT}}"
+            exit 1
+          fi
+          
+          echo "Starting Sofa port-forwarding..."
+          kubectl port-forward svc/{{.ENVIRONMENT}}-sofa-service {{.SOFA_PORT}}:80 > /dev/null 2>&1 &
+          echo "✅ Started Sofa port-forwarding"
+          
+          # Give it a moment to establish
+          sleep 2
+          
+          # Verify port-forwarding is running
+          if ! ps aux | grep -v grep | grep "kubectl port-forward.*{{.ENVIRONMENT}}-sofa-service.*{{.SOFA_PORT}}:80" > /dev/null; then
+            echo "❌ Port-forwarding process not found after starting. Something went wrong."
+            exit 1
+          fi
+        fi
+        
+        # Quick connectivity check before proceeding
+        echo "Checking connectivity to Sofa..."
+        curl -s --connect-timeout 3 -o /dev/null {{.SOFA_URL}} 2>/dev/null
+        if [ $? -ne 0 ]; then
+          echo "⚠️ Warning: Could not connect to Sofa despite port-forwarding being active."
+          echo "Will proceed anyway, but operations might fail."
+        else
+          echo "✅ Successfully connected to Sofa"
+        fi
+      else
+        echo "Skipping port-forwarding checks as requested with --skip-checks"
+      fi
+
+      # Check Keycloak pod status instead of trying port-forwarding
+      echo "Checking Keycloak pod status..."
+      KC_POD_STATUS=$(kubectl get pods -l app=keycloak -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+
+      if [ "$KC_POD_STATUS" != "Running" ]; then
+        echo "⚠️ Keycloak pod is not in Running state (current: $KC_POD_STATUS)"
+        echo "Will skip Keycloak authentication"
+        
+        # Check pod logs for diagnostics
+        KC_POD=$(kubectl get pods -l app=keycloak -o name | head -1)
+        if [ -n "$KC_POD" ]; then
+          echo "Keycloak pod logs (last 10 lines):"
+          kubectl logs $KC_POD --tail=10 || echo "Unable to get pod logs"
+        fi
+        
+        BYPASS_KEYCLOAK=true
+      else
+        echo "✅ Keycloak pod is Running"
+        BYPASS_KEYCLOAK=false
+        
+        # Note: intentionally NOT trying to check port-forwarding that was causing errors
+        echo "Note: Skipping Keycloak connectivity check to avoid port-forwarding errors"
+      fi
+
+      # Try to create database without authentication first
+      echo "Attempting to create database without authentication..."
+      RESPONSE=$(curl -s -X PUT "{{.SOFA_URL}}/$DB_NAME" -w "\n%{http_code}")
+      HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+      BODY=$(echo "$RESPONSE" | sed '$d')
+
+      if [ "$HTTP_CODE" = "201" ]; then
+        echo "✅ Database '$DB_NAME' created successfully without authentication"
+        echo "$BODY"
+        exit 0
+      elif [ "$HTTP_CODE" = "412" ]; then
+        echo "⚠️ Database '$DB_NAME' already exists"
+        echo "$BODY"
+        exit 0
+      elif [ "$HTTP_CODE" = "401" ] && [ "$BYPASS_KEYCLOAK" = "true" ]; then
+        echo "❌ Authentication required but Keycloak is not available"
+        echo "Please fix Keycloak issues and try again"
+        exit 1
+      elif [ "$HTTP_CODE" = "401" ]; then
+        echo "Authentication required. Attempting to get a token..."
+      else
+        echo "❌ Failed to create database '$DB_NAME'"
+        echo "HTTP Code: $HTTP_CODE"
+        echo "Response: $BODY"
+        exit 1
+      fi
+
+      # If we need authentication but Keycloak should be bypassed, exit now
+      if [ "$BYPASS_KEYCLOAK" = "true" ]; then
+        echo "Cannot proceed with authentication as Keycloak is not available"
+        exit 1
+      fi
+
+
+      # Display available clients from configuration
+      echo "Available Keycloak clients:"
+      echo "1) sofa-client (Main Sofa application client)"
+      echo "2) topology (Topology client with HTTP permissions)"
+
+      # Prompt for client selection
+      read -p "Select a client (1-2): " client_selection
+
+      # Set client details based on selection
+      case $client_selection in
+        1)
+          CLIENT_ID="sofa-client"
+          CLIENT_SECRET="sofa-client-secret"
+          echo "Selected sofa-client"
+          ;;
+        2)
+          CLIENT_ID="topology"
+          CLIENT_SECRET="topology"
+          echo "Selected topology client"
+          ;;
+        *)
+          echo "Invalid selection. Please select a number between 1-2."
+          exit 1
+          ;;
+      esac
+
+      # Request token from Keycloak using multiple approaches
+      echo "Requesting authentication token for client '$CLIENT_ID'..."
+      ACCESS_TOKEN=""
+
+      # Attempt method 1: Try using direct kubectl exec with verbose output to see error
+      KC_POD=$(kubectl get pods -l app=keycloak -o name | head -1 | sed 's/^pod\///')
+      if [ -n "$KC_POD" ]; then
+        echo "Attempt 1: Using kubectl exec to curl directly within the Keycloak pod..."
+        
+        # Get debug info about the pod
+        echo "Keycloak pod info:"
+        kubectl describe pod $KC_POD | grep -E "Name:|Status:|IP:|Node:|Ready:" || true
+        
+        # Use a separate command with proper error handling
+        {
+          # Capture the stderr to see the error message
+          EXEC_OUTPUT=$(kubectl exec -i $KC_POD -- curl -v -X POST \
+            "http://localhost:8080/realms/sofa/protocol/openid-connect/token" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET" \
+            2>&1) || true
+            
+          KUBECTL_EXIT=$?
+          if [ $KUBECTL_EXIT -ne 0 ]; then
+            echo "❌ kubectl exec failed with exit code $KUBECTL_EXIT"
+            echo "Error output: $EXEC_OUTPUT"
+          else
+            # Try to extract token from the response
+            ACCESS_TOKEN=$(echo "$EXEC_OUTPUT" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+            if [ -n "$ACCESS_TOKEN" ]; then
+              echo "✅ Successfully obtained token using kubectl exec"
+            else
+              echo "❌ Could not extract token from response"
+              echo "Response: $EXEC_OUTPUT"
+            fi
+          fi
+        } || {
+          echo "❌ Error during kubectl exec operation, but continuing with other methods"
+        }
+      else
+        echo "❌ Could not find Keycloak pod"
+      fi
+
+      # Attempt method 2: Try using port-forward to a different port
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "Attempt 2: Trying port-forward to a different port (8090)..."
+        
+        # Check if any Keycloak port-forward is already running and kill it
+        pkill -f "port-forward.*keycloak" || true
+        sleep 1
+        
+        # Start port-forwarding on a different port in a way that won't fail the script
+        {
+          kubectl port-forward svc/{{.ENVIRONMENT}}-keycloak-service 8090:8080 > /dev/null 2>&1 &
+          PF_PID=$!
+          echo "Started port-forwarding with PID $PF_PID"
+          
+          # Give it time to establish
+          echo "Waiting for port-forwarding to establish..."
+          sleep 5
+          
+          # Check if process is still running
+          if ps -p $PF_PID > /dev/null; then
+            echo "Port-forwarding process is still running"
+            
+            # Try to get a token
+            TOKEN_RESPONSE=$(curl -s -X POST \
+              "http://localhost:8090/realms/sofa/protocol/openid-connect/token" \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET") || true
+              
+            # Try to extract token
+            ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+            if [ -n "$ACCESS_TOKEN" ]; then
+              echo "✅ Successfully obtained token using port-forward to 8090"
+            else
+              echo "❌ Could not extract token from response"
+              echo "Response: $TOKEN_RESPONSE"
+            fi
+          else
+            echo "❌ Port-forwarding process died"
+          fi
+          
+          # Cleanup any port-forwarding we started
+          pkill -f "port-forward.*8090" || true
+        } || {
+          echo "❌ Error during port-forward operation, but continuing with other methods"
+        }
+      fi
+
+      # Attempt method 3: Try directly accessing Keycloak pod's IP
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "Attempt 3: Trying direct pod IP address approach..."
+        
+        # Get pod IP in a way that won't fail the script
+        {
+          POD_IP=$(kubectl get pod $KC_POD -o jsonpath='{.status.podIP}' 2>/dev/null) || true
+          if [ -n "$POD_IP" ]; then
+            echo "Keycloak pod IP: $POD_IP"
+            
+            TOKEN_RESPONSE=$(curl -s --connect-timeout 3 -X POST \
+              "http://$POD_IP:8080/realms/sofa/protocol/openid-connect/token" \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET") || true
+              
+            # Try to extract token
+            ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+            if [ -n "$ACCESS_TOKEN" ]; then
+              echo "✅ Successfully obtained token using direct pod IP"
+            else
+              echo "❌ Could not extract token from response"
+              echo "Response: $TOKEN_RESPONSE"
+            fi
+          else
+            echo "❌ Could not get Keycloak pod IP"
+          fi
+        } || {
+          echo "❌ Error during direct IP access, but continuing"
+        }
+      fi
+
+      # Attempt method 4: Try port-forwarding to the Keycloak service using the right port
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "Attempt 4: Trying standard port-forward to the service..."
+        
+        # Kill any existing port-forwarding
+        pkill -f "port-forward.*keycloak" || true
+        sleep 1
+        
+        {
+          if [ -n "$KC_POD" ]; then
+            # Using the main port-forwarding (30082) which is what the token is issued with
+            kubectl port-forward svc/dev-keycloak-service 30082:8080 > /dev/null 2>&1 &
+            PF_POD_PID=$!
+            echo "Started port-forwarding with PID $PF_POD_PID"
+            
+            # Give it time to establish
+            echo "Waiting for port-forwarding to establish..."
+            sleep 5
+            
+            # Try to get a token
+            TOKEN_RESPONSE=$(curl -s -X POST \
+              "http://localhost:30082/realms/sofa/protocol/openid-connect/token" \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET") || true
+              
+            # Try to extract token
+            ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+            if [ -n "$ACCESS_TOKEN" ]; then
+              echo "✅ Successfully obtained token using service port-forward"
+            else
+              echo "❌ Could not extract token from response"
+              echo "Response: $TOKEN_RESPONSE"
+            fi
+            
+            # Keep port-forwarding running for token validation
+          else
+            echo "❌ No Keycloak pod found for service port-forwarding"
+          fi
+        } || {
+          echo "❌ Error during service port-forward operation, but continuing"
+        }
+      fi
+
+      # If all else fails, check if Keycloak is actually serving tokens
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "Final diagnostics: Checking if Keycloak pod is actually serving token requests..."
+        
+        # Get pod logs to check startup status
+        echo "Last 20 lines of Keycloak pod logs:"
+        kubectl logs $KC_POD --tail=20 || true
+        
+        echo "Do you want to:"
+        echo "1) Continue without authentication (might fail if auth is required)"
+        echo "2) Abort the operation"
+        read -p "Enter choice (1-2): " continue_choice
+        
+        if [ "$continue_choice" != "1" ]; then
+          echo "Operation aborted"
+          exit 1
+        fi
+        
+        echo "Continuing without authentication token..."
+      else
+        echo "✅ Authentication token obtained successfully"
+      fi
+
+      # Create the database with or without the token based on what we have
+      echo "Creating database '$DB_NAME'..."
+      if [ -n "$ACCESS_TOKEN" ]; then
+        echo "Using authentication token"
+        RESPONSE=$(curl -v -X PUT "{{.SOFA_URL}}/$DB_NAME" \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          -w "\n%{http_code}" 2>&1)
+        CURL_EXIT=$?
+        echo "curl exit code: $CURL_EXIT"
+      else
+        echo "Attempting without authentication"
+        RESPONSE=$(curl -v -X PUT "{{.SOFA_URL}}/$DB_NAME" -w "\n%{http_code}" 2>&1)
+        CURL_EXIT=$?
+        echo "curl exit code: $CURL_EXIT"
+      fi
+
+      # Show full response with verbose output for debugging
+      echo "Full curl response:"
+      echo "$RESPONSE"
+
+      # Extract HTTP code from the response
+      HTTP_CODE=$(echo "$RESPONSE" | grep -o -E '< HTTP/[0-9.]+ [0-9]+' | tail -1 | awk '{print $3}')
+      if [ -z "$HTTP_CODE" ]; then
+        # Try alternative method to extract HTTP code
+        HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+      fi
+
+      # Extract response body
+      BODY=$(echo "$RESPONSE" | sed -n -e '/^{/,/^}/p')
+      if [ -z "$BODY" ]; then
+        BODY="No JSON response body found"
+      fi
+
+      if [ "$HTTP_CODE" = "201" ]; then
+        echo "✅ Database '$DB_NAME' created successfully"
+        echo "$BODY"
+      elif [ "$HTTP_CODE" = "412" ]; then
+        echo "⚠️ Database '$DB_NAME' already exists"
+        echo "$BODY"
+      else
+        echo "❌ Failed to create database '$DB_NAME'"
+        echo "HTTP Code: $HTTP_CODE"
+        echo "Response Body: $BODY"
+        exit 1
+      fi
+
+      # Clean up any port-forwarding processes we started (but don't fail if it fails)
+      pkill -f "port-forward.*30082" || true
+      echo "Note: Any port-forwarding started by this task has been cleaned up."
+
+  insert-document:
+    desc: Insert a document into a CouchDB database (requires port-forwarding)
+    cmds:
+    - |
+      # Parse arguments
+      args=({{.CLI_ARGS}})
+      if [ ${#args[@]} -lt 2 ]; then
+        echo "Usage: task insert-document -- <database_name> '<json_document>'"
+        echo "Example: task insert-document -- my_database '{\"name\":\"John\",\"age\":30}'"
+        exit 1
+      fi
+
+      DB_NAME=${args[0]}
+      JSON_DATA=${args[@]:1}
+
+      # Check if database exists
+      echo "Checking if database '$DB_NAME' exists..."
+      DB_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "{{.SOFA_URL}}/$DB_NAME")
+
+      if [ "$DB_CHECK" != "200" ]; then
+        echo "Database '$DB_NAME' doesn't exist. Creating it..."
+        CREATE_RESPONSE=$(curl -s -X PUT "{{.SOFA_URL}}/$DB_NAME" -w "\n%{http_code}")
+        CREATE_HTTP_CODE=$(echo "$CREATE_RESPONSE" | tail -n1)
+        
+        if [ "$CREATE_HTTP_CODE" != "201" ] && [ "$CREATE_HTTP_CODE" != "412" ]; then
+          echo "❌ Failed to create database '$DB_NAME'"
+          echo "HTTP Code: $CREATE_HTTP_CODE"
+          echo "Response: $(echo "$CREATE_RESPONSE" | sed '$d')"
+          exit 1
+        fi
+      fi
+
+      # Insert the document
+      echo "Inserting document into '$DB_NAME'..."
+      RESPONSE=$(curl -s -X POST "{{.SOFA_URL}}/$DB_NAME" \
+        -H "Content-Type: application/json" \
+        -d "$JSON_DATA" \
+        -w "\n%{http_code}")
+
+      HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+      BODY=$(echo "$RESPONSE" | sed '$d')
+
+      if [ "$HTTP_CODE" = "201" ]; then
+        # Extract document ID from response
+        DOC_ID=$(echo "$BODY" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+        echo "✅ Document inserted successfully"
+        echo "Document ID: $DOC_ID"
+        echo "Full response: $BODY"
+        echo "$DOC_ID"  # Output just the ID for easy capture
+      else
+        echo "❌ Failed to insert document"
+        echo "HTTP Code: $HTTP_CODE"
+        echo "Response: $BODY"
+        exit 1
+      fi
+
+  retrieve-document:
+    desc: Retrieve a document from CouchDB (requires port-forwarding)
+    cmds:
+    - |
+      # Parse arguments
+      args=({{.CLI_ARGS}})
+      if [ ${#args[@]} -lt 2 ]; then
+        echo "Usage: task retrieve-document -- <database_name> <document_id>"
+        echo "Example: task retrieve-document -- my_database 1234567890abcdef"
+        exit 1
+      fi
+
+      DB_NAME=${args[0]}
+      DOC_ID=${args[1]}
+
+      # Retrieve the document
+      echo "Retrieving document '$DOC_ID' from database '$DB_NAME'..."
+      RESPONSE=$(curl -s -X GET "{{.SOFA_URL}}/$DB_NAME/$DOC_ID" \
+        -w "\n%{http_code}")
+
+      HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+      BODY=$(echo "$RESPONSE" | sed '$d')
+
+      if [ "$HTTP_CODE" = "200" ]; then
+        echo "✅ Document retrieved successfully"
+        echo "$BODY" | json_pp  # Pretty print the JSON response
+      elif [ "$HTTP_CODE" = "404" ]; then
+        echo "❌ Document not found"
+        echo "Response: $BODY"
+        exit 1
+      else
+        echo "❌ Failed to retrieve document"
+        echo "HTTP Code: $HTTP_CODE"
+        echo "Response: $BODY"
+        exit 1
+      fi
+
+  round-trip:
+    desc: Perform a round-trip operation (create DB, insert document, retrieve document)
+    cmds:
+    - |
+      # Parse arguments
+      args=({{.CLI_ARGS}})
+      if [ ${#args[@]} -lt 2 ]; then
+        echo "Usage: task round-trip -- <database_name> '<json_document>'"
+        echo "Example: task round-trip -- my_database '{\"name\":\"John\",\"age\":30}'"
+        exit 1
+      fi
+
+      DB_NAME=${args[0]}
+      JSON_DATA=${args[@]:1}
+
+      echo "🔄 Starting round-trip test..."
+      echo "========================================"
+
+      # Step 1: Ensure the database exists
+      echo "Step 1: Creating/checking database '$DB_NAME'..."
+      DB_RESPONSE=$(curl -s -X PUT "{{.SOFA_URL}}/$DB_NAME" -w "\n%{http_code}")
+      DB_HTTP_CODE=$(echo "$DB_RESPONSE" | tail -n1)
+      DB_BODY=$(echo "$DB_RESPONSE" | sed '$d')
+
+      if [ "$DB_HTTP_CODE" = "201" ]; then
+        echo "✅ Database '$DB_NAME' created"
+      elif [ "$DB_HTTP_CODE" = "412" ]; then
+        echo "✅ Database '$DB_NAME' already exists"
+      else
+        echo "❌ Failed to create database"
+        echo "HTTP Code: $DB_HTTP_CODE"
+        echo "Response: $DB_BODY"
+        exit 1
+      fi
+
+      echo "========================================"
+
+      # Step 2: Insert the document
+      echo "Step 2: Inserting document into '$DB_NAME'..."
+      INSERT_RESPONSE=$(curl -s -X POST "{{.SOFA_URL}}/$DB_NAME" \
+        -H "Content-Type: application/json" \
+        -d "$JSON_DATA" \
+        -w "\n%{http_code}")
+
+      INSERT_HTTP_CODE=$(echo "$INSERT_RESPONSE" | tail -n1)
+      INSERT_BODY=$(echo "$INSERT_RESPONSE" | sed '$d')
+
+      if [ "$INSERT_HTTP_CODE" != "201" ]; then
+        echo "❌ Failed to insert document"
+        echo "HTTP Code: $INSERT_HTTP_CODE"
+        echo "Response: $INSERT_BODY"
+        exit 1
+      fi
+
+      # Extract document ID from response
+      DOC_ID=$(echo "$INSERT_BODY" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+      echo "✅ Document inserted with ID: $DOC_ID"
+      echo "Original document: $JSON_DATA"
+
+      echo "========================================"
+
+      # Step 3: Retrieve the document
+      echo "Step 3: Retrieving document '$DOC_ID'..."
+      GET_RESPONSE=$(curl -s -X GET "{{.SOFA_URL}}/$DB_NAME/$DOC_ID" \
+        -w "\n%{http_code}")
+
+      GET_HTTP_CODE=$(echo "$GET_RESPONSE" | tail -n1)
+      GET_BODY=$(echo "$GET_RESPONSE" | sed '$d')
+
+      if [ "$GET_HTTP_CODE" != "200" ]; then
+        echo "❌ Failed to retrieve document"
+        echo "HTTP Code: $GET_HTTP_CODE"
+        echo "Response: $GET_BODY"
+        exit 1
+      fi
+
+      echo "✅ Document retrieved successfully"
+      echo "Retrieved document:"
+      echo "$GET_BODY" | json_pp  # Pretty print the JSON
+
+      echo "========================================"
+      echo "✅ Round-trip test completed successfully!"
+
+      # Return the document ID
+      echo "Document ID: $DOC_ID"
+
+  # Sample document creation task
+  create-sample-document:
+    desc: Create a sample JSON document that can be used with other tasks
+    cmds:
+    - |
+      cat > sample-document.json << EOF
+      {
+        "name": "John Doe",
+        "email": "john.doe@example.com",
+        "age": 30,
+        "active": true,
+        "roles": ["admin", "user"],
+        "address": {
+          "street": "123 Main St",
+          "city": "Anytown",
+          "state": "CA",
+          "zip": "12345"
+        },
+        "created_at": "2023-08-15T10:00:00Z"
+      }
+      EOF
+      echo "✅ Sample document created: sample-document.json"
+      echo "Usage examples:"
+      echo "  - task insert-document -- my_database \"`cat sample-document.json`\""
+      echo "  - task round-trip -- my_database \"`cat sample-document.json`\""
+
+  fix-keycloak-jwks:
+    desc: Fix Keycloak JWKS configuration and restart the Keycloak pod
+    cmds:
+    - |
+      echo "Fixing Keycloak JWKS configuration..."
+
+      # Apply the updated Keycloak deployment with JWKS configuration
+      kubectl apply -f k8s/base/keycloak/deployment.yaml
+
+      # Restart the Keycloak pod to apply the changes
+      echo "Restarting Keycloak pod..."
+      kubectl rollout restart deployment/{{.ENVIRONMENT}}-keycloak
+
+      # Wait for the Keycloak pod to be ready
+      echo "Waiting for Keycloak to restart (this might take a minute)..."
+      kubectl rollout status deployment/{{.ENVIRONMENT}}-keycloak --timeout=120s
+
+      # Check if port-forwarding is active for Keycloak
+      if ! ps aux | grep -v grep | grep "kubectl port-forward.*{{.ENVIRONMENT}}-keycloak-service.*{{.KEYCLOAK_PORT}}:8080" > /dev/null; then
+        echo "Starting Keycloak port-forwarding..."
+        kubectl port-forward svc/{{.ENVIRONMENT}}-keycloak-service {{.KEYCLOAK_PORT}}:8080 > /dev/null 2>&1 &
+        echo "✅ Started Keycloak port-forwarding"
+        
+        # Give it a moment to establish
+        sleep 5
+      else
+        echo "Keycloak port-forwarding is already active"
+      fi
+
+      # Check connectivity to Keycloak
+      echo "Checking Keycloak connectivity..."
+      for i in {1..12}; do
+        echo -n "."
+        sleep 5
+        curl -s --connect-timeout 3 -o /dev/null http://localhost:{{.KEYCLOAK_PORT}} 2>/dev/null
+        if [ $? -eq 0 ]; then
+          echo " connected!"
+          echo "✅ Keycloak is now available at http://localhost:{{.KEYCLOAK_PORT}}"
+          echo "✅ Admin console available at http://localhost:{{.KEYCLOAK_PORT}}/admin"
+          echo "   Username: admin"
+          echo "   Password: admin"
+          break
+        fi
+        
+        # If we've reached the last attempt, show more detailed diagnostics
+        if [ $i -eq 12 ]; then
+          echo ""
+          echo "⚠️ Could not connect to Keycloak after multiple attempts."
+          echo "Checking Keycloak pod status:"
+          kubectl get pods | grep keycloak
+          echo ""
+          echo "Keycloak logs (last 20 lines):"
+          kubectl logs $(kubectl get pods -l app=keycloak -o name | head -1) | tail -20
+        fi
+      done
+
+      echo ""
+      echo "To use the fixed Keycloak with database creation, run:"
+      echo "task create-database -- <database_name>"
+
+  fix-keycloak-realm:
+    desc: Fix the Keycloak realm configuration and restart Keycloak
+    cmds:
+    - |
+      echo "Applying fixed Keycloak configuration..."
+
+      # Apply the updated Keycloak configuration with proper realm name
+      kubectl apply -k k8s/overlays/{{.ENVIRONMENT}}
+
+      # Restart the Keycloak pod to apply the changes
+      echo "Restarting Keycloak pod..."
+      kubectl rollout restart deployment/{{.ENVIRONMENT}}-keycloak
+
+      # Wait for the Keycloak pod to be ready
+      echo "Waiting for Keycloak to restart (this might take a minute)..."
+      kubectl rollout status deployment/{{.ENVIRONMENT}}-keycloak --timeout=120s || true
+
+      echo "Waiting for Keycloak to fully initialize (30 seconds)..."
+      sleep 30
+
+      echo "✅ Keycloak configuration has been fixed."
+      echo "Now you can run 'task setup' again to complete the setup process."
+
+  fix-sofa-jwks:
+    desc: Fix the JWKS configuration in Sofa to correctly validate tokens from Keycloak
+    cmds:
+    - |
+      echo "Applying fixed Sofa configuration with correct JWKS URL..."
+
+      # Apply only the Sofa ConfigMap
+      kubectl apply -f k8s/overlays/{{.ENVIRONMENT}}/sofa-config-patch.yaml
+
+      # Restart the Sofa pod to apply the changes
+      echo "Restarting Sofa pod..."
+      kubectl rollout restart deployment/{{.ENVIRONMENT}}-sofa
+
+      # Wait for the Sofa pod to be ready
+      echo "Waiting for Sofa to restart..."
+      kubectl rollout status deployment/{{.ENVIRONMENT}}-sofa --timeout=60s
+
+      echo "✅ Sofa JWKS configuration has been fixed."
+      echo "To create a database, run:"
+      echo "task create-database -- <database_name>"
+      echo ""
+      echo "If you encounter connection issues with Keycloak, you can try:"
+      echo "1. Run 'task port-forward' in a separate terminal first"
+      echo "2. Try 'task create-database -- <database_name> --skip-checks'"
 
   default:
     desc: Display help information

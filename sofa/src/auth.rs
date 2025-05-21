@@ -9,12 +9,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use reqwest::Client;
-use tracing::{error, info, debug};
+use tracing::{error, info, debug, warn};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use regex::Regex;
+use anyhow::{Result, anyhow};
 
-use crate::config::AuthConfig;
+use crate::config::AuthSettings;
 use crate::proxy::AppState;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,22 +33,21 @@ pub struct JwtClaims {
 
 #[derive(Debug, Deserialize)]
 struct JwksResponse {
-    keys: Vec<Jwk>,
+    keys: Vec<JwkKey>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-struct Jwk {
-    kid: Option<String>,
+struct JwkKey {
+    kid: String,
     kty: String,
     #[serde(rename = "use")]
     usage: Option<String>,
-    alg: Option<String>,
-    n: Option<String>,   // modulus for RSA
-    e: Option<String>,   // exponent for RSA
-    x: Option<String>,   // x coordinate for EC
-    y: Option<String>,   // y coordinate for EC
-    crv: Option<String>, // curve for EC
+    n: Option<String>,   // Modulus for RSA keys
+    e: Option<String>,   // Exponent for RSA keys
+    x: Option<String>,   // X coordinate for EC keys
+    y: Option<String>,   // Y coordinate for EC keys
+    crv: Option<String>, // Curve for EC keys
 }
 
 // Token type to store in extensions
@@ -59,12 +59,12 @@ pub struct AuthToken(pub String);
 pub struct UserId(pub String);
 
 // Check if a path is authorized based on the claims
-fn is_authorized(method: &Method, path: &str, claims: &JwtClaims) -> bool {
+fn is_authorized(method: &Method, path: &str, claims: &serde_json::Value) -> bool {
     let claim_name = method.as_str().to_lowercase();
     debug!("Checking authorization for method: '{}' (claim name: '{}'), path: '{}'", method, claim_name, path);
-    debug!("Available claims: {:?}", claims.additional_claims);
+    debug!("Available claims: {:?}", claims);
 
-    if let Some(claim_value) = claims.additional_claims.get(&claim_name) {
+    if let Some(claim_value) = claims.get(&claim_name) {
         debug!("Found claim for method {}: {:?}", claim_name, claim_value);
         if let Some(paths) = claim_value.as_array() {
             debug!("Claim is an array with {} elements", paths.len());
@@ -118,6 +118,7 @@ pub async fn auth_middleware(
 ) -> Response {
     // Skip auth if disabled
     if !state.config.auth.enabled {
+        debug!("Authentication is disabled, skipping auth middleware");
         return next.run(request).await;
     }
 
@@ -135,144 +136,152 @@ pub async fn auth_middleware(
     {
         Some(header) => header,
         None => {
-            return (StatusCode::UNAUTHORIZED, "Missing authorization header").into_response();
+            warn!("No Authorization Bearer token found");
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(axum::body::Body::from("Missing or invalid Authorization header"))
+                .unwrap();
         }
     };
 
     // Extract the token from the Authorization header (Bearer token)
     let token = if auth_header.starts_with("Bearer ") {
-        auth_header.trim_start_matches("Bearer ").trim()
+        auth_header.trim_start_matches("Bearer ").trim().to_string()
     } else {
-        return (StatusCode::UNAUTHORIZED, "Invalid authorization header format").into_response();
+        warn!("Invalid authorization header format");
+        return Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(axum::body::Body::from("Invalid authorization header format"))
+            .unwrap();
     };
 
-    // Validate the token
-    let validation_result = validate_token(token, &state.config.auth, &state.client).await;
-    
-    match validation_result {
-        Ok(token_data) => {
+    debug!("Found token: {}...", token.chars().take(10).collect::<String>());
+
+    // Verify the token
+    match verify_token(&token, &state.config.auth, &state.client).await {
+        Ok(claims) => {
+            debug!("Token verified successfully");
             // Check authorization
-            if !is_authorized(&method, &path, &token_data.claims) {
-                error!("Authorization failed for {} {}", method, path);
-                return (StatusCode::FORBIDDEN, "Not authorized to access this resource").into_response();
+            if !is_authorized(&method, &path, &claims) {
+                error!("Authorization failed for {} {} {}", method, path, claims);
+                return Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body(axum::body::Body::from("Not authorized to access this resource"))
+                    .unwrap();
             }
             
             // Store user ID in extensions if available
-            if let Some(sub) = token_data.claims.sub {
-                request.extensions_mut().insert(UserId(sub));
+            if let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
+                debug!("User ID (sub) extracted: {}", sub);
+                request.extensions_mut().insert(UserId(sub.to_string()));
             }
+            
+            // Store the raw token for downstream middleware/handlers
+            request.extensions_mut().insert(AuthToken(token));
             
             // Authentication and authorization succeeded
             info!("Request authorized: {} {}", method, path);
             next.run(request).await
-        }
-        Err(err) => {
-            // Invalid token
-            error!("Token validation failed: {}", err);
-            (StatusCode::UNAUTHORIZED, format!("Invalid token: {}", err)).into_response()
+        },
+        Err(e) => {
+            warn!("Token verification failed: {}", e);
+            Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(axum::body::Body::from(format!("Invalid token: {}", e)))
+                .unwrap()
         }
     }
 }
 
-// Validate the JWT token
-async fn validate_token(
-    token: &str,
-    auth_config: &AuthConfig,
-    client: &Client,
-) -> Result<TokenData<JwtClaims>, String> {
-    // Decode the token header to get the key ID (kid)
-    let header = decode_header(token).map_err(|e| format!("Invalid token header: {}", e))?;
+// Verify JWT token with JWKS key rotation
+async fn verify_token(token: &str, auth_config: &AuthSettings, client: &Client) -> Result<Value> {
+    // Get the JWKS URL
+    let jwks_url = auth_config.jwks_url
+        .as_ref()
+        .ok_or_else(|| anyhow!("JWKS URL not configured"))?;
     
-    let kid = header.kid.as_deref();
+    // Get the issuer
+    let issuer = auth_config.issuer
+        .as_ref()
+        .ok_or_else(|| anyhow!("Issuer not configured"))?;
     
-    // Log the config for debugging
-    debug!("Auth config - enabled: {}", auth_config.enabled);
-    if let Some(issuer) = &auth_config.issuer {
-        debug!("Auth config - issuer: {}", issuer);
-    } else {
-        debug!("Auth config - issuer is not set");
-    }
-    if let Some(jwks_url) = &auth_config.jwks_url {
-        debug!("Auth config - jwks_url: {}", jwks_url);
-    } else {
-        error!("Auth config - jwks_url is not set");
-    }
+    // Get the audience
+    let audience = auth_config.audience
+        .as_ref()
+        .ok_or_else(|| anyhow!("Audience not configured"))?;
     
-    // If jwks_url is configured, fetch the JWKS
-    let decoding_key = if let Some(jwks_url) = &auth_config.jwks_url {
-        // Fetch JWKS
-        let jwks = fetch_jwks(jwks_url, client).await
-            .map_err(|e| format!("Failed to fetch JWKS: {}", e))?;
-        
-        // Find the key with matching kid
-        let jwk = match kid {
-            Some(kid) => jwks.keys.iter().find(|k| k.kid.as_deref() == Some(kid)),
-            None => jwks.keys.first(),
-        };
-        
-        let jwk = jwk.ok_or_else(|| "No matching key found in JWKS".to_string())?;
-        
-        // Convert JWK to DecodingKey
-        match jwk.kty.as_str() {
-            "RSA" => {
-                let n = jwk.n.as_deref().ok_or_else(|| "Missing modulus (n) in RSA key".to_string())?;
-                let e = jwk.e.as_deref().ok_or_else(|| "Missing exponent (e) in RSA key".to_string())?;
-                
-                // Use from_rsa_components which takes &str parameters for modulus and exponent
-                DecodingKey::from_rsa_components(n, e)
-                    .map_err(|e| format!("Failed to create RSA key: {}", e))
-            },
-            // Add support for EC keys if needed
-            _ => Err(format!("Unsupported key type: {}", jwk.kty)),
-        }
-    } else {
-        // No JWKS URL configured, can't validate signature
-        return Err("JWKS URL not configured".to_string());
-    }?;
+    // Decode header without verification to get kid (key ID)
+    let header = decode_header(token)
+        .map_err(|e| anyhow!("Failed to decode token header: {}", e))?;
     
-    // Set up validation parameters
-    let mut validation = Validation::new(Algorithm::RS256); // Adjust algorithm as needed
+    let kid = header.kid
+        .ok_or_else(|| anyhow!("Token doesn't have a 'kid' header parameter"))?;
     
-    // Check issuer if configured
-    if let Some(issuer) = &auth_config.issuer {
-        validation.set_issuer(&[issuer.as_str()]);
-    }
+    debug!("Token uses key ID (kid): {}", kid);
     
-    // Check audience if configured
-    if let Some(audience) = &auth_config.audience {
-        validation.set_audience(&[audience.as_str()]);
-    }
-    
-    // Validate the token
-    let token_data = decode::<JwtClaims>(token, &decoding_key, &validation)
-        .map_err(|e| format!("Token validation failed: {}", e))?;
-    
-    Ok(token_data)
-}
-
-// Fetch JWKS from the provided URL
-async fn fetch_jwks(jwks_url: &str, client: &Client) -> Result<JwksResponse, String> {
-    info!("Fetching JWKS from URL: {}", jwks_url);
-    
-    let response = client
-        .get(jwks_url)
+    // Fetch JWKS (JSON Web Key Set) from the URL
+    debug!("Fetching JWKS from URL: {}", jwks_url);
+    let jwks: JwksResponse = client.get(jwks_url)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch JWKS: {}", e))?;
+        .map_err(|e| anyhow!("Failed to fetch JWKS: {}", e))?
+        .json()
+        .await
+        .map_err(|e| anyhow!("Failed to parse JWKS response: {}", e))?;
     
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_else(|_| "Could not read response body".to_string());
-        error!("JWKS request failed with status: {}, body: {}", status, body);
-        return Err(format!("JWKS request failed with status: {}", status));
-    }
+    debug!("JWKS fetched successfully, found {} keys", jwks.keys.len());
     
-    let response_text = response.text().await
-        .map_err(|e| format!("Failed to read JWKS response: {}", e))?;
+    // Find the key with matching kid
+    let key = jwks.keys.iter()
+        .find(|k| k.kid == kid)
+        .ok_or_else(|| anyhow!("No matching key found in JWKS with kid: {}", kid))?;
     
-    info!("Received JWKS response: {}", response_text);
+    debug!("Matching key found with kid: {}, type: {}", key.kid, key.kty);
     
-    // Parse the response
-    serde_json::from_str::<JwksResponse>(&response_text)
-        .map_err(|e| format!("Failed to parse JWKS response: {}", e))
+    // Create the appropriate decoding key based on key type
+    let decoding_key = match key.kty.as_str() {
+        "RSA" => {
+            let n = key.n.as_ref()
+                .ok_or_else(|| anyhow!("RSA key missing 'n' parameter"))?;
+            let e = key.e.as_ref()
+                .ok_or_else(|| anyhow!("RSA key missing 'e' parameter"))?;
+            
+            DecodingKey::from_rsa_components(n, e)
+                .map_err(|e| anyhow!("Failed to create RSA decoding key: {}", e))?
+        },
+        "EC" => {
+            let x = key.x.as_ref()
+                .ok_or_else(|| anyhow!("EC key missing 'x' parameter"))?;
+            let y = key.y.as_ref()
+                .ok_or_else(|| anyhow!("EC key missing 'y' parameter"))?;
+            let curve = key.crv.as_ref()
+                .ok_or_else(|| anyhow!("EC key missing 'crv' parameter"))?;
+            
+            // Map curve name to algorithm
+            let algorithm = match curve.as_str() {
+                "P-256" => Algorithm::ES256,
+                "P-384" => Algorithm::ES384,
+                // ES512 isn't available in jsonwebtoken, use HS512 as a fallback
+                "P-521" => Algorithm::HS512,
+                _ => return Err(anyhow!("Unsupported EC curve: {}", curve)),
+            };
+            
+            DecodingKey::from_ec_components(x, y)
+                .map_err(|e| anyhow!("Failed to create EC decoding key: {}", e))?
+        },
+        _ => return Err(anyhow!("Unsupported key type: {}", key.kty)),
+    };
+    
+    // Create validation with appropriate configurations
+    let mut validation = Validation::new(Algorithm::RS256); // Will be adjusted based on alg
+    validation.set_issuer(&[issuer]);
+    validation.set_audience(&[audience]);
+    
+    // Decode and verify the token
+    let token_data = decode::<Value>(token, &decoding_key, &validation)
+        .map_err(|e| anyhow!("Token validation failed: {}", e))?;
+    
+    debug!("Token validated successfully");
+    
+    Ok(token_data.claims)
 } 

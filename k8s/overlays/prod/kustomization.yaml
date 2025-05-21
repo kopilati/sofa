@@ -9,6 +9,8 @@ resources:
 patchesStrategicMerge:
 - sofa-config-patch.yaml
 - resources-patch.yaml
+- keycloak-service-patch.yaml
+- keycloak-deployment-patch.yaml
 
 # Sets the image tag for production deployment
 images:

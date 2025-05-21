@@ -6,11 +6,13 @@ data:
   auth_enabled: "false"
   # The following settings are ignored when auth_enabled is false
   auth_issuer: ""
-  auth_audience: ""
+  auth_audience: "sofa-client"
   auth_jwks_url: ""
   # Audit configuration
   audit_enabled: "false"
   audit_log_service_url: ""
   # Note: master_enc_key is stored in a Secret, not in this ConfigMap
-  # Encrypted endpoints - comma-separated list of regex patterns
-  encrypted_endpoints: "^/secure/.*,^/api/private/.*"
+  # Encrypted endpoints - comma-separated list of regex patterns that match document operations
+  # CouchDB document operations: /db_name/{doc_id}, /db_name/_design/*, /db_name/_find, /db_name/_bulk_docs, etc.
+  # While database operations like /_all_dbs, /db_name (with no further path), /_db_updates remain unencrypted
+  encrypted_endpoints: "^/[^_][^/]+/[^_].*,^/[^_][^/]+/_design/.*,^/[^_][^/]+/_bulk_docs,^/[^_][^/]+/_find,^/[^_][^/]+/_index"

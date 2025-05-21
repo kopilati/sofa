@@ -30,31 +30,29 @@ pub struct AuditLogger {
 }
 
 impl AuditLogger {
-    pub fn new(config: Arc<AppConfig>, client: Arc<Client>) -> Option<Self> {
-        // Only create the logger if a URL is configured
-        if let Some(url) = config.audit_log_service_url.clone() {
-            let (tx, mut rx) = mpsc::channel::<(AuditLogEntry, String)>(100); // Buffer size of 100
+    pub fn new(config: Arc<AppConfig>, client: Arc<Client>, service_url: &str) -> Option<Self> {
+        let (tx, mut rx) = mpsc::channel::<(AuditLogEntry, String)>(100); // Buffer size of 100
+        
+        // Create a clone of the service URL for the background task
+        let url = service_url.to_string();
+        
+        // Spawn a background worker
+        tokio::spawn(async move {
+            info!("Audit log worker started, sending logs to: {}", url);
             
-            // Spawn a background worker
-            tokio::spawn(async move {
-                info!("Audit log worker started, sending logs to: {}", url);
+            while let Some((entry, token)) = rx.recv().await {
+                debug!("Processing audit log entry: {:?}", entry);
                 
-                while let Some((entry, token)) = rx.recv().await {
-                    debug!("Processing audit log entry: {:?}", entry);
-                    
-                    match send_audit_log(&entry, &token, &url, &client).await {
-                        Ok(_) => debug!("Audit log sent successfully"),
-                        Err(e) => error!("Failed to send audit log: {}", e),
-                    }
+                match send_audit_log(&entry, &token, &url, &client).await {
+                    Ok(_) => debug!("Audit log sent successfully"),
+                    Err(e) => error!("Failed to send audit log: {}", e),
                 }
-                
-                info!("Audit log worker shutting down");
-            });
+            }
             
-            Some(Self { tx })
-        } else {
-            None
-        }
+            info!("Audit log worker shutting down");
+        });
+        
+        Some(Self { tx })
     }
     
     pub async fn log(&self, entry: AuditLogEntry, token: String) {

@@ -42,19 +42,13 @@ async fn main() -> Result<()> {
     });
 
     info!("Starting CouchDB proxy server");
-    info!("CouchDB URL: {}", config.couchdb_url);
-    info!("Server port: {}", config.server_port);
+    info!("CouchDB URL: {}", config.couchdb.url);
+    info!("Server port: {}", config.server.port);
     info!("OAuth2 authentication enabled: {}", config.auth.enabled);
     
     debug!("Full configuration: {:?}", config);
     
-    // Print all environment variables for debugging
-    for (key, value) in std::env::vars() {
-        if key.starts_with("SOFA_AUTH") {
-            debug!("ENV: {}={}", key, value);
-        }
-    }
-    
+    // Log authentication settings
     if config.auth.enabled {
         if let Some(issuer) = &config.auth.issuer {
             info!("OAuth2 issuer: {}", issuer);
@@ -74,9 +68,9 @@ async fn main() -> Result<()> {
     }
     
     // Log audit configuration
-    info!("Audit logging enabled: {}", config.audit_enabled);
-    if config.audit_enabled {
-        if let Some(url) = &config.audit_log_service_url {
+    info!("Audit logging enabled: {}", config.audit.enabled);
+    if config.audit.enabled {
+        if let Some(url) = &config.audit.service_url {
             info!("Audit log service URL: {}", url);
         } else {
             info!("Audit log service URL is not set");
@@ -84,10 +78,10 @@ async fn main() -> Result<()> {
     }
     
     // Log encryption configuration
-    if let Some(_) = &config.master_enc_key {
+    if let Some(_) = &config.encryption.master_key {
         info!("Encryption enabled with master key");
-        if !config.encrypted_endpoints.is_empty() {
-            info!("Encrypted endpoints: {}", config.encrypted_endpoints.join(", "));
+        if !config.encryption.endpoints.is_empty() {
+            info!("Encrypted endpoints: {}", config.encryption.endpoints.join(", "));
         } else {
             info!("No encrypted endpoints configured");
         }
@@ -96,7 +90,7 @@ async fn main() -> Result<()> {
     }
 
     // Initialize encryption service if master key is provided
-    let encryption_service = if let Some(master_key) = &config.master_enc_key {
+    let encryption_service = if let Some(master_key) = &config.encryption.master_key {
         info!("Initializing encryption service with master key");
         let service = Arc::new(EncryptionService::new());
         if let Err(e) = service.initialize(master_key).await {
@@ -115,8 +109,13 @@ async fn main() -> Result<()> {
     let client = Arc::new(Client::new());
 
     // Create the audit logger if enabled
-    let audit_logger = if config.audit_enabled {
-        AuditLogger::new(Arc::new(config.clone()), client.clone())
+    let audit_logger = if config.audit.enabled {
+        if let Some(url) = &config.audit.service_url {
+            AuditLogger::new(Arc::new(config.clone()), client.clone(), url)
+        } else {
+            info!("Audit logging enabled but no service URL provided");
+            None
+        }
     } else {
         None
     };
@@ -153,7 +152,7 @@ async fn main() -> Result<()> {
         .layer(cors);
 
     // Start the server
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.server_port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     info!("Listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

@@ -4,8 +4,10 @@ metadata:
   name: sofa-config
 data:
   auth_enabled: "true"
-  auth_issuer: "http://keycloak-service:8080/auth/realms/sofa"
+  auth_issuer: "http://localhost:30082/realms/sofa"
   auth_audience: "sofa-client"
   auth_jwks_url: "http://keycloak-service:8080/auth/realms/sofa/protocol/openid-connect/certs"
   audit_enabled: "true"
   audit_log_service_url: "http://audit-service:8080/logs"
+  # Base configuration for encrypted endpoints - document operations
+  encrypted_endpoints: "^/[^_][^/]+/[^_].*,^/[^_][^/]+/_design/.*,^/[^_][^/]+/_bulk_docs,^/[^_][^/]+/_find,^/[^_][^/]+/_index"

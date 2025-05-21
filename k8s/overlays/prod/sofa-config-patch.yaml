@@ -7,3 +7,6 @@ data:
   # Production-specific configuration - uses the prefixed service names
   auth_issuer: "http://prod-keycloak-service:8080/auth/realms/sofa"
   auth_jwks_url: "http://prod-keycloak-service:8080/auth/realms/sofa/protocol/openid-connect/certs"
+  # Production encrypted endpoints - only document operations, no development endpoints
+  # Document operations in CouchDB: /db_name/{doc_id},  /db_name/_bulk_docs, etc.
+  encrypted_endpoints: "^/[^_][^/]+/[^_].*,^/[^_][^/]+/_bulk_docs"

@@ -5,3 +5,4 @@ resources:
 - couchdb
 - sofa
 - keycloak
+- audit

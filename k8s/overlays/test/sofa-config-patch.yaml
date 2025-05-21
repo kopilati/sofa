@@ -7,3 +7,5 @@ data:
   # Test-specific configuration - uses the prefixed service names
   auth_issuer: "http://test-keycloak-service:8080/realms/sofa"
   auth_jwks_url: "http://test-keycloak-service:8080/realms/sofa/protocol/openid-connect/certs"
+  # Enable encryption
+  encrypted_endpoints: "^/secure/.*,^/[^_][^/]+/[^_].*,^/[^_][^/]+/_design/.*"
