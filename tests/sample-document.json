@@ -1,0 +1,30 @@
+✅ Sample document created: sample-document.json
+Usage examples:
+  - task insert-document -- my_database "{
+  "name": "John Doe",
+  "email": "john.doe@example.com",
+  "age": 30,
+  "active": true,
+  "roles": ["admin", "user"],
+  "address": {
+    "street": "123 Main St",
+    "city": "Anytown",
+    "state": "CA",
+    "zip": "12345"
+  },
+  "created_at": "2023-08-15T10:00:00Z"
+}"
+  - task round-trip -- my_database "{
+  "name": "John Doe",
+  "email": "john.doe@example.com",
+  "age": 30,
+  "active": true,
+  "roles": ["admin", "user"],
+  "address": {
+    "street": "123 Main St",
+    "city": "Anytown",
+    "state": "CA",
+    "zip": "12345"
+  },
+  "created_at": "2023-08-15T10:00:00Z"
+}"

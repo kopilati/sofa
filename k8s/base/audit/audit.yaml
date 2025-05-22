@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-audit-service
+  labels:
+    app: audit-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audit-service
+  template:
+    metadata:
+      labels:
+        app: audit-service
+    spec:
+      containers:
+      - name: audit-service
+        image: audit-service:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3001
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dev-audit-service
+spec:
+  selector:
+    app: audit-service
+  ports:
+  - port: 80
+    targetPort: 3001
+  type: ClusterIP
