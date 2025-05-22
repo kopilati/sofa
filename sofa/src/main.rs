@@ -8,7 +8,7 @@ use anyhow::Result;
 use axum::{
     http::Method,
     middleware,
-    routing::{any, get},
+    routing::any,
     Router,
 };
 use std::net::SocketAddr;
@@ -66,6 +66,8 @@ async fn main() -> Result<()> {
             info!("OAuth2 JWKS URL is not set");
         }
     }
+
+    info!("headers to be removed: {:?}", config.proxy.headers_remove);
     
     // Log audit configuration
     info!("Audit logging enabled: {}", config.audit.enabled);

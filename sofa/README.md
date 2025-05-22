@@ -239,3 +239,68 @@ task run-test-local
 ## License
 
 MIT 
+
+
+
+## Enctryption flows
+**Read**
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Sofa (API Gateway)
+    participant IdentityServer (Duende)
+    participant EncryptionService
+
+    Client->>Sofa: POST /object { data, $_key }
+    Sofa->>Sofa: Extract $_key
+    Sofa->>IdentityServer: Token Exchange (enc_key = $_key)
+    IdentityServer-->>Sofa: Delegation Token (contains encrypted key material)
+    Sofa->>EncryptionService: Encrypt payload with received key(s)
+    EncryptionService-->>Sofa: Encrypted data
+    Sofa->>Storage: Store encrypted object
+```
+
+**Write**
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Sofa (API Gateway)
+    participant IdentityServer (Duende)
+    participant EncryptionService
+
+    Client->>Sofa: POST /object { data, $_key }
+    Sofa->>Sofa: Extract $_key
+    Sofa->>IdentityServer: Token Exchange (enc_key = $_key)
+    IdentityServer-->>Sofa: Delegation Token (contains encrypted key material)
+    Sofa->>EncryptionService: Encrypt payload with received key(s)
+    EncryptionService-->>Sofa: Encrypted data
+    Sofa->>Storage: Store encrypted object
+  ```
+
+
+  **Handling encryption**
+  ```mermaid
+  flowchart TD
+    A[Start] --> B{Any object has $_key?}
+    B -- Yes --> C[Token exchange with enc_key = $_key(s)]
+    C --> D[Receive encrypted key(s)]
+    D --> E{HSM configured?}
+    E -- Yes --> F{Master key in memory?}
+    F -- No --> G[Decrypt master key using HSM]
+    F -- Yes --> H[Use master key from memory]
+    G --> I[Decrypt returned key(s) with master key]
+    H --> I
+    I --> J[Decrypt objects using their corresponding keys]
+
+    E -- No --> H2[Use configured master key]
+    H2 --> I
+
+    B -- No --> K{HSM configured?}
+    K -- Yes --> L{Master key in memory?}
+    L -- No --> M[Decrypt master key using HSM]
+    L -- Yes --> N[Use master key from memory]
+    M --> O[Decrypt all objects with master key]
+    N --> O
+    K -- No --> P[Use configured master key]
+    P --> O
+```

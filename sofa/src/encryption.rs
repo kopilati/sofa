@@ -6,19 +6,18 @@ use anyhow::{Result, anyhow};
 use axum::{
     body::{Body, Bytes},
     extract::{Request, State},
-    http::{Method, StatusCode, Uri, HeaderName, HeaderValue},
+    http::{StatusCode, HeaderName, HeaderValue},
     middleware::Next,
     response::Response,
     BoxError,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Sha256, Digest};
 use std::{
-    collections::HashMap,
     sync::Arc, 
     str::FromStr
 };

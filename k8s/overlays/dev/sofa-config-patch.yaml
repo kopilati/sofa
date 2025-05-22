@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sofa-config
+data:
+  auth_enabled: "true"
+  # Development configuration for Keycloak URLs
+  # Issuer must match the URL from which tokens are issued
+  auth_audience: "sofa-client"
+  # JWKS URL must be reachable by Sofa for token validation
+  auth_jwks_url: "http://dev-keycloak-service:8080/realms/sofa/protocol/openid-connect/certs"
+  # Proxy configuration to fix "empty reply from server" issue
+  proxy_headers_remove: "transfer-encoding"
+  proxy_preserve_host: "true"
+  chunked_encoding: "false"
+  proxy_buffer_size: "10mb"
+  proxy_timeout: "60000"

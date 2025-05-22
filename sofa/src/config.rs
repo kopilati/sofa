@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
 use config::{Config, ConfigError, File, Environment};
-use tracing::{debug, info, warn, error};
+use tracing::{debug, info, error};
 
 // Server configuration settings
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -41,6 +41,16 @@ pub struct EncryptionSettings {
     pub endpoints: Vec<String>,
 }
 
+// Proxy settings
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProxySettings {
+    pub headers_remove: Vec<String>,
+    pub preserve_host: bool,
+    pub chunked_encoding: bool,
+    pub buffer_size: String,
+    pub timeout: u64,
+}
+
 // Main application configuration
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AppConfig {
@@ -49,6 +59,7 @@ pub struct AppConfig {
     pub auth: AuthSettings,
     pub audit: AuditSettings,
     pub encryption: EncryptionSettings,
+    pub proxy: ProxySettings,
 }
 
 // For compatibility with the rest of the code
@@ -120,6 +131,7 @@ impl AppConfig {
                     .list_separator(",")
                     // We need to correctly map nested keys
                     .with_list_parse_key("encryption_endpoints")
+                    .with_list_parse_key("proxy_headers_remove")
             );
         
         // Build and deserialize
@@ -156,6 +168,11 @@ impl AppConfig {
         }
         debug!("Encryption Enabled: {}", app_config.encryption.master_key.is_some());
         debug!("Encrypted Endpoints: {:?}", app_config.encryption.endpoints);
+        debug!("Proxy Headers to Remove: {:?}", app_config.proxy.headers_remove);
+        debug!("Proxy Preserve Host: {}", app_config.proxy.preserve_host);
+        debug!("Proxy Chunked Encoding: {}", app_config.proxy.chunked_encoding);
+        debug!("Proxy Buffer Size: {}", app_config.proxy.buffer_size);
+        debug!("Proxy Timeout: {}", app_config.proxy.timeout);
         
         Ok(ac)
     }
@@ -209,6 +226,18 @@ impl Default for EncryptionSettings {
     }
 }
 
+impl Default for ProxySettings {
+    fn default() -> Self {
+        Self {
+            headers_remove: vec!["transfer-encoding".to_string()],
+            preserve_host: true,
+            chunked_encoding: false,
+            buffer_size: "10mb".to_string(),
+            timeout: 60000,
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -217,6 +246,7 @@ impl Default for AppConfig {
             auth: AuthSettings::default(),
             audit: AuditSettings::default(),
             encryption: EncryptionSettings::default(),
+            proxy: ProxySettings::default(),
         }
     }
 } 

@@ -1,16 +1,15 @@
 use axum::{
     extract::{Request, State},
-    http::{Method, StatusCode, Uri},
+    http::{Method, StatusCode},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, TokenData, Validation};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use reqwest::Client;
 use tracing::{error, info, debug, warn};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use regex::Regex;
 use anyhow::{Result, anyhow};
@@ -146,7 +145,8 @@ pub async fn auth_middleware(
 
     // Extract the token from the Authorization header (Bearer token)
     let token = if auth_header.trim().to_lowercase().starts_with("bearer ") {
-        auth_header.to_lowercase().trim_start_matches("bearer ").trim().to_string()
+        // Preserve original case of the token
+        auth_header.trim().split_whitespace().nth(1).unwrap_or("").trim().to_string()
     } else {
         warn!("Invalid authorization header format {}", auth_header);
         return Response::builder()
@@ -212,7 +212,7 @@ async fn verify_token(token: &str, auth_config: &AuthSettings, client: &Client) 
     
     // Decode header without verification to get kid (key ID)
     let header = decode_header(token)
-        .map_err(|e| anyhow!("Failed to decode token header: {}", e))?;
+        .map_err(|e| anyhow!("Failed to decode token header: {} - {}", e, token))?;
     
     let kid = header.kid
         .ok_or_else(|| anyhow!("Token doesn't have a 'kid' header parameter"))?;

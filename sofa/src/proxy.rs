@@ -128,7 +128,10 @@ pub async fn proxy_handler(
     // Copy headers from original request to proxy request, excluding authorization
     for (key, value) in headers.iter() {
         // Skip headers that reqwest will set or that we want to replace
-        if key == "host" || key == "content-length" || key == "authorization" {
+        let should_skip = key == "host" || key == "content-length" || key == "authorization" || 
+            state.config.proxy.headers_remove.iter().any(|h| h.eq_ignore_ascii_case(key.as_str()));
+            
+        if should_skip {
             debug!("Skipping header: {}", key);
             continue;
         }
@@ -146,12 +149,23 @@ pub async fn proxy_handler(
         }
     }
     
+    // If preserve_host is enabled, set the Host header to match the target
+    if state.config.proxy.preserve_host {
+        if let Ok(host) = reqwest::header::HeaderValue::from_str(&format!("{}:{}", state.config.couchdb.url.split("://").nth(1).unwrap_or("localhost").split('/').next().unwrap_or("localhost"), "5984")) {
+            debug!("Setting Host header for CouchDB: {:?}", host);
+            client_req = client_req.header(reqwest::header::HOST, host);
+        }
+    }
+    
     // Set the body, if any
     if !body_bytes.is_empty() {
         debug!("Adding request body");
         client_req = client_req.body(body_bytes);
     }
 
+    // Set timeout from config
+    client_req = client_req.timeout(std::time::Duration::from_millis(state.config.proxy.timeout));
+    
     debug!("Sending request to CouchDB: {} {}", reqwest_method, target_url);
     
     // Send the request to CouchDB
@@ -201,18 +215,35 @@ pub async fn proxy_handler(
                     // Add essential headers
                     let headers = builder.headers_mut().unwrap();
                     for (key, value) in resp_headers.iter() {
-                        if key.as_str().eq_ignore_ascii_case("transfer-encoding") {
-                            continue; // Let Hyper handle it
+                        // Always skip headers configured to be removed
+                        let should_skip = state.config.proxy.headers_remove.iter()
+                            .any(|h| h.eq_ignore_ascii_case(key.as_str()));
+                        
+                        if should_skip {
+                            debug!("Skipping header in response: {}", key);
+                            continue; 
                         }
+                        
                         if let Ok(name) = HeaderName::try_from(key.as_str()) {
                             if let Ok(val) = HeaderValue::try_from(value.as_bytes()) {
+                                debug!("Adding header to response: {}: {:?}", key, value);
                                 headers.insert(name, val);
                             }
                         }
                     }
                     
+                    // Set content-length explicitly to prevent chunked encoding issues
+                    if !state.config.proxy.chunked_encoding && !headers.contains_key("content-length") {
+                        let content_length = bytes.len().to_string();
+                        if let Ok(val) = HeaderValue::try_from(content_length) {
+                            debug!("Setting explicit content-length: {}", bytes.len());
+                            headers.insert(HeaderName::from_static("content-length"), val);
+                        }
+                    }
+                    
                     // Ensure content-type is set
                     if !headers.contains_key("content-type") && status.is_success() {
+                        debug!("Setting default content-type: application/json");
                         headers.insert(
                             HeaderName::from_static("content-type"),
                             HeaderValue::from_static("application/json")

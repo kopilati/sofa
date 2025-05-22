@@ -1,6 +1,6 @@
 use axum::{
     extract::{Request, State},
-    http::{Method, StatusCode, Uri},
+    http::Method,
     middleware::Next,
     response::Response,
 };
@@ -12,7 +12,7 @@ use tracing::{debug, error, info};
 
 use crate::config::AppConfig;
 use crate::proxy::AppState;
-use crate::auth::{AuthToken, UserId};
+use crate::auth::UserId;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct AuditLogEntry {

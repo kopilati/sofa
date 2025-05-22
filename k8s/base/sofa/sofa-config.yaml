@@ -11,3 +11,9 @@ data:
   audit_log_service_url: "http://audit-service:8080/logs"
   # Base configuration for encrypted endpoints - document operations
   encrypted_endpoints: "^/[^_][^/]+/[^_].*,^/[^_][^/]+/_design/.*,^/[^_][^/]+/_bulk_docs,^/[^_][^/]+/_find,^/[^_][^/]+/_index"
+
+  proxy_headers_remove: "transfer-encoding"
+  proxy_preserve_host: "true"
+  chunked_encoding: "false"
+  proxy_buffer_size: "10mb"
+  proxy_timeout: "60000"

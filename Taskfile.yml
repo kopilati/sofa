@@ -260,393 +260,46 @@ tasks:
 
   # CouchDB Operations Tasks
   create-database:
-    silent: true
-    desc: Create a database in CouchDB with authentication (requires port-forwarding)
+    silent: false
+    desc: Create a database in CouchDB using direct curl command
     cmds:
     - |
       # Parse arguments
-      SKIP_CHECKS=false
-      ARGS=()
-      for arg in {{.CLI_ARGS}}; do
-        if [ "$arg" = "--skip-checks" ]; then
-          SKIP_CHECKS=true
-        else
-          ARGS+=("$arg")
-        fi
-      done
-
-      if [ ${#ARGS[@]} -lt 1 ]; then
-        echo "Usage: task create-database -- <database_name> [--skip-checks]"
-        echo "Example: task create-database -- my_database"
+      if [ -z "{{.CLI_ARGS}}" ]; then
+        echo "Usage: task create-database-simple -- <database_name>"
         exit 1
       fi
 
-      DB_NAME=${ARGS[0]}
+      DB_NAME={{.CLI_ARGS}}
       echo "Creating database '$DB_NAME'..."
 
-      # Check if Sofa port-forwarding is active using ps
-      if [ "$SKIP_CHECKS" = "false" ]; then
-        echo "Checking if Sofa port-forwarding is active..."
-        if ps aux | grep -v grep | grep "kubectl port-forward.*{{.ENVIRONMENT}}-sofa-service.*{{.SOFA_PORT}}:80" > /dev/null; then
-          echo "✅ Sofa port-forwarding is already active"
-        else
-          echo "❌ Sofa port-forwarding is not active. Will attempt to start port-forwarding..."
-          
-          # Check if the service exists before attempting port-forwarding
-          echo "Checking if {{.ENVIRONMENT}}-sofa-service exists..."
-          if ! kubectl get svc {{.ENVIRONMENT}}-sofa-service &>/dev/null; then
-            echo "❌ Service {{.ENVIRONMENT}}-sofa-service does not exist!"
-            echo "Current environment: {{.ENVIRONMENT}}"
-            exit 1
-          fi
-          
-          echo "Starting Sofa port-forwarding..."
-          kubectl port-forward svc/{{.ENVIRONMENT}}-sofa-service {{.SOFA_PORT}}:80 > /dev/null 2>&1 &
-          echo "✅ Started Sofa port-forwarding"
-          
-          # Give it a moment to establish
-          sleep 2
-          
-          # Verify port-forwarding is running
-          if ! ps aux | grep -v grep | grep "kubectl port-forward.*{{.ENVIRONMENT}}-sofa-service.*{{.SOFA_PORT}}:80" > /dev/null; then
-            echo "❌ Port-forwarding process not found after starting. Something went wrong."
-            exit 1
-          fi
-        fi
-        
-        # Quick connectivity check before proceeding
-        echo "Checking connectivity to Sofa..."
-        curl -s --connect-timeout 3 -o /dev/null {{.SOFA_URL}} 2>/dev/null
-        if [ $? -ne 0 ]; then
-          echo "⚠️ Warning: Could not connect to Sofa despite port-forwarding being active."
-          echo "Will proceed anyway, but operations might fail."
-        else
-          echo "✅ Successfully connected to Sofa"
-        fi
-      else
-        echo "Skipping port-forwarding checks as requested with --skip-checks"
-      fi
+      CLIENT_ID="sofa-client"
+      CLIENT_SECRET="sofa-client-secret"
 
-      # Check Keycloak pod status instead of trying port-forwarding
-      echo "Checking Keycloak pod status..."
-      KC_POD_STATUS=$(kubectl get pods -l app=keycloak -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+      # Get token from Keycloak
+      echo "Getting token from Keycloak..."
+      TOKEN_RESPONSE=$(curl -s -X POST \
+        "http://localhost:30082/realms/sofa/protocol/openid-connect/token" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET")
 
-      if [ "$KC_POD_STATUS" != "Running" ]; then
-        echo "⚠️ Keycloak pod is not in Running state (current: $KC_POD_STATUS)"
-        echo "Will skip Keycloak authentication"
-        
-        # Check pod logs for diagnostics
-        KC_POD=$(kubectl get pods -l app=keycloak -o name | head -1)
-        if [ -n "$KC_POD" ]; then
-          echo "Keycloak pod logs (last 10 lines):"
-          kubectl logs $KC_POD --tail=10 || echo "Unable to get pod logs"
-        fi
-        
-        BYPASS_KEYCLOAK=true
-      else
-        echo "✅ Keycloak pod is Running"
-        BYPASS_KEYCLOAK=false
-        
-        # Note: intentionally NOT trying to check port-forwarding that was causing errors
-        echo "Note: Skipping Keycloak connectivity check to avoid port-forwarding errors"
-      fi
+      echo "Token response: $TOKEN_RESPONSE"
 
-      # Try to create database without authentication first
-      echo "Attempting to create database without authentication..."
-      RESPONSE=$(curl -s -X PUT "{{.SOFA_URL}}/$DB_NAME" -w "\n%{http_code}")
-      HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-      BODY=$(echo "$RESPONSE" | sed '$d')
+      ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
-      if [ "$HTTP_CODE" = "201" ]; then
-        echo "✅ Database '$DB_NAME' created successfully without authentication"
-        echo "$BODY"
-        exit 0
-      elif [ "$HTTP_CODE" = "412" ]; then
-        echo "⚠️ Database '$DB_NAME' already exists"
-        echo "$BODY"
-        exit 0
-      elif [ "$HTTP_CODE" = "401" ] && [ "$BYPASS_KEYCLOAK" = "true" ]; then
-        echo "❌ Authentication required but Keycloak is not available"
-        echo "Please fix Keycloak issues and try again"
-        exit 1
-      elif [ "$HTTP_CODE" = "401" ]; then
-        echo "Authentication required. Attempting to get a token..."
-      else
-        echo "❌ Failed to create database '$DB_NAME'"
-        echo "HTTP Code: $HTTP_CODE"
-        echo "Response: $BODY"
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "❌ Failed to get access token"
         exit 1
       fi
 
-      # If we need authentication but Keycloak should be bypassed, exit now
-      if [ "$BYPASS_KEYCLOAK" = "true" ]; then
-        echo "Cannot proceed with authentication as Keycloak is not available"
-        exit 1
-      fi
+      echo "✅ Got access token"
+      echo "First 100 chars of token: ${ACCESS_TOKEN:0:100}..."
 
-
-      # Display available clients from configuration
-      echo "Available Keycloak clients:"
-      echo "1) sofa-client (Main Sofa application client)"
-      echo "2) topology (Topology client with HTTP permissions)"
-
-      # Prompt for client selection
-      read -p "Select a client (1-2): " client_selection
-
-      # Set client details based on selection
-      case $client_selection in
-        1)
-          CLIENT_ID="sofa-client"
-          CLIENT_SECRET="sofa-client-secret"
-          echo "Selected sofa-client"
-          ;;
-        2)
-          CLIENT_ID="topology"
-          CLIENT_SECRET="topology"
-          echo "Selected topology client"
-          ;;
-        *)
-          echo "Invalid selection. Please select a number between 1-2."
-          exit 1
-          ;;
-      esac
-
-      # Request token from Keycloak using multiple approaches
-      echo "Requesting authentication token for client '$CLIENT_ID'..."
-      ACCESS_TOKEN=""
-
-      # Attempt method 1: Try using direct kubectl exec with verbose output to see error
-      KC_POD=$(kubectl get pods -l app=keycloak -o name | head -1 | sed 's/^pod\///')
-      if [ -n "$KC_POD" ]; then
-        echo "Attempt 1: Using kubectl exec to curl directly within the Keycloak pod..."
-        
-        # Get debug info about the pod
-        echo "Keycloak pod info:"
-        kubectl describe pod $KC_POD | grep -E "Name:|Status:|IP:|Node:|Ready:" || true
-        
-        # Use a separate command with proper error handling
-        {
-          # Capture the stderr to see the error message
-          EXEC_OUTPUT=$(kubectl exec -i $KC_POD -- curl -v -X POST \
-            "http://localhost:8080/realms/sofa/protocol/openid-connect/token" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET" \
-            2>&1) || true
-            
-          KUBECTL_EXIT=$?
-          if [ $KUBECTL_EXIT -ne 0 ]; then
-            echo "❌ kubectl exec failed with exit code $KUBECTL_EXIT"
-            echo "Error output: $EXEC_OUTPUT"
-          else
-            # Try to extract token from the response
-            ACCESS_TOKEN=$(echo "$EXEC_OUTPUT" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-            if [ -n "$ACCESS_TOKEN" ]; then
-              echo "✅ Successfully obtained token using kubectl exec"
-            else
-              echo "❌ Could not extract token from response"
-              echo "Response: $EXEC_OUTPUT"
-            fi
-          fi
-        } || {
-          echo "❌ Error during kubectl exec operation, but continuing with other methods"
-        }
-      else
-        echo "❌ Could not find Keycloak pod"
-      fi
-
-      # Attempt method 2: Try using port-forward to a different port
-      if [ -z "$ACCESS_TOKEN" ]; then
-        echo "Attempt 2: Trying port-forward to a different port (8090)..."
-        
-        # Check if any Keycloak port-forward is already running and kill it
-        pkill -f "port-forward.*keycloak" || true
-        sleep 1
-        
-        # Start port-forwarding on a different port in a way that won't fail the script
-        {
-          kubectl port-forward svc/{{.ENVIRONMENT}}-keycloak-service 8090:8080 > /dev/null 2>&1 &
-          PF_PID=$!
-          echo "Started port-forwarding with PID $PF_PID"
-          
-          # Give it time to establish
-          echo "Waiting for port-forwarding to establish..."
-          sleep 5
-          
-          # Check if process is still running
-          if ps -p $PF_PID > /dev/null; then
-            echo "Port-forwarding process is still running"
-            
-            # Try to get a token
-            TOKEN_RESPONSE=$(curl -s -X POST \
-              "http://localhost:8090/realms/sofa/protocol/openid-connect/token" \
-              -H "Content-Type: application/x-www-form-urlencoded" \
-              -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET") || true
-              
-            # Try to extract token
-            ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-            if [ -n "$ACCESS_TOKEN" ]; then
-              echo "✅ Successfully obtained token using port-forward to 8090"
-            else
-              echo "❌ Could not extract token from response"
-              echo "Response: $TOKEN_RESPONSE"
-            fi
-          else
-            echo "❌ Port-forwarding process died"
-          fi
-          
-          # Cleanup any port-forwarding we started
-          pkill -f "port-forward.*8090" || true
-        } || {
-          echo "❌ Error during port-forward operation, but continuing with other methods"
-        }
-      fi
-
-      # Attempt method 3: Try directly accessing Keycloak pod's IP
-      if [ -z "$ACCESS_TOKEN" ]; then
-        echo "Attempt 3: Trying direct pod IP address approach..."
-        
-        # Get pod IP in a way that won't fail the script
-        {
-          POD_IP=$(kubectl get pod $KC_POD -o jsonpath='{.status.podIP}' 2>/dev/null) || true
-          if [ -n "$POD_IP" ]; then
-            echo "Keycloak pod IP: $POD_IP"
-            
-            TOKEN_RESPONSE=$(curl -s --connect-timeout 3 -X POST \
-              "http://$POD_IP:8080/realms/sofa/protocol/openid-connect/token" \
-              -H "Content-Type: application/x-www-form-urlencoded" \
-              -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET") || true
-              
-            # Try to extract token
-            ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-            if [ -n "$ACCESS_TOKEN" ]; then
-              echo "✅ Successfully obtained token using direct pod IP"
-            else
-              echo "❌ Could not extract token from response"
-              echo "Response: $TOKEN_RESPONSE"
-            fi
-          else
-            echo "❌ Could not get Keycloak pod IP"
-          fi
-        } || {
-          echo "❌ Error during direct IP access, but continuing"
-        }
-      fi
-
-      # Attempt method 4: Try port-forwarding to the Keycloak service using the right port
-      if [ -z "$ACCESS_TOKEN" ]; then
-        echo "Attempt 4: Trying standard port-forward to the service..."
-        
-        # Kill any existing port-forwarding
-        pkill -f "port-forward.*keycloak" || true
-        sleep 1
-        
-        {
-          if [ -n "$KC_POD" ]; then
-            # Using the main port-forwarding (30082) which is what the token is issued with
-            kubectl port-forward svc/dev-keycloak-service 30082:8080 > /dev/null 2>&1 &
-            PF_POD_PID=$!
-            echo "Started port-forwarding with PID $PF_POD_PID"
-            
-            # Give it time to establish
-            echo "Waiting for port-forwarding to establish..."
-            sleep 5
-            
-            # Try to get a token
-            TOKEN_RESPONSE=$(curl -s -X POST \
-              "http://localhost:30082/realms/sofa/protocol/openid-connect/token" \
-              -H "Content-Type: application/x-www-form-urlencoded" \
-              -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET") || true
-              
-            # Try to extract token
-            ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-            if [ -n "$ACCESS_TOKEN" ]; then
-              echo "✅ Successfully obtained token using service port-forward"
-            else
-              echo "❌ Could not extract token from response"
-              echo "Response: $TOKEN_RESPONSE"
-            fi
-            
-            # Keep port-forwarding running for token validation
-          else
-            echo "❌ No Keycloak pod found for service port-forwarding"
-          fi
-        } || {
-          echo "❌ Error during service port-forward operation, but continuing"
-        }
-      fi
-
-      # If all else fails, check if Keycloak is actually serving tokens
-      if [ -z "$ACCESS_TOKEN" ]; then
-        echo "Final diagnostics: Checking if Keycloak pod is actually serving token requests..."
-        
-        # Get pod logs to check startup status
-        echo "Last 20 lines of Keycloak pod logs:"
-        kubectl logs $KC_POD --tail=20 || true
-        
-        echo "Do you want to:"
-        echo "1) Continue without authentication (might fail if auth is required)"
-        echo "2) Abort the operation"
-        read -p "Enter choice (1-2): " continue_choice
-        
-        if [ "$continue_choice" != "1" ]; then
-          echo "Operation aborted"
-          exit 1
-        fi
-        
-        echo "Continuing without authentication token..."
-      else
-        echo "✅ Authentication token obtained successfully"
-      fi
-
-      # Create the database with or without the token based on what we have
-      echo "Creating database '$DB_NAME'..."
-      if [ -n "$ACCESS_TOKEN" ]; then
-        echo "Using authentication token"
-        RESPONSE=$(curl -v -X PUT "{{.SOFA_URL}}/$DB_NAME" \
-          -H "Authorization: Bearer $ACCESS_TOKEN" \
-          -w "\n%{http_code}" 2>&1)
-        CURL_EXIT=$?
-        echo "curl exit code: $CURL_EXIT"
-      else
-        echo "Attempting without authentication"
-        RESPONSE=$(curl -v -X PUT "{{.SOFA_URL}}/$DB_NAME" -w "\n%{http_code}" 2>&1)
-        CURL_EXIT=$?
-        echo "curl exit code: $CURL_EXIT"
-      fi
-
-      # Show full response with verbose output for debugging
-      echo "Full curl response:"
-      echo "$RESPONSE"
-
-      # Extract HTTP code from the response
-      HTTP_CODE=$(echo "$RESPONSE" | grep -o -E '< HTTP/[0-9.]+ [0-9]+' | tail -1 | awk '{print $3}')
-      if [ -z "$HTTP_CODE" ]; then
-        # Try alternative method to extract HTTP code
-        HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-      fi
-
-      # Extract response body
-      BODY=$(echo "$RESPONSE" | sed -n -e '/^{/,/^}/p')
-      if [ -z "$BODY" ]; then
-        BODY="No JSON response body found"
-      fi
-
-      if [ "$HTTP_CODE" = "201" ]; then
-        echo "✅ Database '$DB_NAME' created successfully"
-        echo "$BODY"
-      elif [ "$HTTP_CODE" = "412" ]; then
-        echo "⚠️ Database '$DB_NAME' already exists"
-        echo "$BODY"
-      else
-        echo "❌ Failed to create database '$DB_NAME'"
-        echo "HTTP Code: $HTTP_CODE"
-        echo "Response Body: $BODY"
-        exit 1
-      fi
-
-      # Clean up any port-forwarding processes we started (but don't fail if it fails)
-      pkill -f "port-forward.*30082" || true
-      echo "Note: Any port-forwarding started by this task has been cleaned up."
+      # Directly create database
+      echo "Creating database with curl..."
+      curl -v -X PUT \
+        "http://localhost:30081/$DB_NAME" \
+        -H "Authorization: Bearer $ACCESS_TOKEN"
 
   insert-document:
     desc: Insert a document into a CouchDB database (requires port-forwarding)
