@@ -27,7 +27,8 @@ data:
           "protocol": "openid-connect",
           "attributes": {
             "access.token.lifespan": "1800"
-          }
+          },
+          "defaultClientScopes": ["sofa-custom-scope", "sofa-db-admin"]
         },
         {
           "clientId": "topology",
@@ -89,6 +90,45 @@ data:
           ]
         },
         {
+          "name": "sofa-db-admin",
+          "description": "Database admin permissions for Sofa",
+          "protocol": "openid-connect",
+          "attributes": {
+            "include.in.token.scope": "true",
+            "display.on.consent.screen": "true"
+          },
+          "protocolMappers": [
+            {
+              "name": "db-create-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "true",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "db_create",
+                "jsonType.label": "boolean"
+              }
+            },
+            {
+              "name": "put-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"^/.*$\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "put",
+                "jsonType.label": "JSON"
+              }
+            }
+          ]
+        },
+        {
           "name": "topology-http-methods",
           "description": "HTTP method permissions for Topology client",
           "protocol": "openid-connect",
@@ -103,7 +143,7 @@ data:
               "protocolMapper": "oidc-hardcoded-claim-mapper",
               "consentRequired": false,
               "config": {
-                "claim.value": "[\"\/*\"]",
+                "claim.value": "[\"^/.*$\"]",
                 "userinfo.token.claim": "true",
                 "id.token.claim": "true",
                 "access.token.claim": "true",
@@ -117,7 +157,7 @@ data:
               "protocolMapper": "oidc-hardcoded-claim-mapper",
               "consentRequired": false,
               "config": {
-                "claim.value": "[\"\/*\"]",
+                "claim.value": "[\"^/.*$\"]",
                 "userinfo.token.claim": "true",
                 "id.token.claim": "true",
                 "access.token.claim": "true",
@@ -131,7 +171,7 @@ data:
               "protocolMapper": "oidc-hardcoded-claim-mapper",
               "consentRequired": false,
               "config": {
-                "claim.value": "[\"\/*\"]",
+                "claim.value": "[\"^/.*$\"]",
                 "userinfo.token.claim": "true",
                 "id.token.claim": "true",
                 "access.token.claim": "true",
@@ -145,7 +185,7 @@ data:
               "protocolMapper": "oidc-hardcoded-claim-mapper",
               "consentRequired": false,
               "config": {
-                "claim.value": "[\"\/*\"]",
+                "claim.value": "[\"^/.*$\"]",
                 "userinfo.token.claim": "true",
                 "id.token.claim": "true",
                 "access.token.claim": "true",
@@ -159,7 +199,7 @@ data:
               "protocolMapper": "oidc-hardcoded-claim-mapper",
               "consentRequired": false,
               "config": {
-                "claim.value": "[\"\/*\"]",
+                "claim.value": "[\"^/.*$\"]",
                 "userinfo.token.claim": "true",
                 "id.token.claim": "true",
                 "access.token.claim": "true",
@@ -173,7 +213,7 @@ data:
               "protocolMapper": "oidc-hardcoded-claim-mapper",
               "consentRequired": false,
               "config": {
-                "claim.value": "[\"\/*\"]",
+                "claim.value": "[\"^/.*$\"]",
                 "userinfo.token.claim": "true",
                 "id.token.claim": "true",
                 "access.token.claim": "true",

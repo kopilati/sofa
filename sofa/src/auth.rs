@@ -145,10 +145,10 @@ pub async fn auth_middleware(
     };
 
     // Extract the token from the Authorization header (Bearer token)
-    let token = if auth_header.starts_with("Bearer ") {
-        auth_header.trim_start_matches("Bearer ").trim().to_string()
+    let token = if auth_header.trim().to_lowercase().starts_with("bearer ") {
+        auth_header.to_lowercase().trim_start_matches("bearer ").trim().to_string()
     } else {
-        warn!("Invalid authorization header format");
+        warn!("Invalid authorization header format {}", auth_header);
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .body(axum::body::Body::from("Invalid authorization header format"))
