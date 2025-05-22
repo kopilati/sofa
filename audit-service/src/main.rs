@@ -46,7 +46,7 @@ struct AppState {
 async fn main() {
     // Initialize tracing with debug level
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::TRACE)
         .finish();
     tracing_subscriber::fmt::init();
 
@@ -80,6 +80,7 @@ async fn main() {
 
 // Health check endpoint
 async fn health_check() -> &'static str {
+    info!("Health check endpoint called");
     "Audit Log Service is running"
 }
 
