@@ -9,6 +9,8 @@ data:
   auth_audience: "sofa-client"
   # JWKS URL must be reachable by Sofa for token validation
   auth_jwks_url: "http://dev-keycloak-service:8080/realms/sofa/protocol/openid-connect/certs"
+  # Encryption configuration for development
+  encrypted_endpoints: "^/[^_][^/]+/[^_].*,^/[^_][^/]+/_design/.*,^/[^_][^/]+/_bulk_docs,^/[^_][^/]+/_find,^/[^_][^/]+/_index"
   # Proxy configuration to fix "empty reply from server" issue
   proxy_headers_remove: "transfer-encoding"
   proxy_preserve_host: "true"

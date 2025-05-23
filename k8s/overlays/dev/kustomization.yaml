@@ -6,6 +6,13 @@ namePrefix: dev-
 resources:
 - ../../base
 
+# Generate dev-specific secrets
+secretGenerator:
+- name: sofa-secrets
+  behavior: replace
+  literals:
+  - master_enc_key=dev-environment-secure-encryption-key-2025
+
 patchesStrategicMerge:
 - sofa-deployment-patch.yaml
 - sofa-config-patch.yaml

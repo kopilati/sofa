@@ -6,3 +6,4 @@ resources:
 - service.yaml
 - secret.yaml
 - sofa-config.yaml
+- sofa-secrets.yaml
