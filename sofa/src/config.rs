@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use config::{Config, ConfigError, File, Environment};
 use tracing::{debug, info, error};
 
+// Import the feature-gated HsmConfig
+use crate::hsm::HsmConfig;
+
 // Server configuration settings
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ServerSettings {
@@ -39,6 +42,17 @@ pub struct AuditSettings {
 pub struct EncryptionSettings {
     pub master_key: Option<String>,
     pub endpoints: Vec<String>,
+    pub hsm: bool,
+}
+
+impl EncryptionSettings {
+    pub fn hsm_enabled(&self) -> bool {
+        self.hsm && self.is_enabled()
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.master_key.is_some()
+    }
 }
 
 // Proxy settings
@@ -166,7 +180,8 @@ impl AppConfig {
         if let Some(url) = &app_config.audit.service_url {
             debug!("Audit Service URL: {}", url);
         }
-        debug!("Encryption Enabled: {}", app_config.encryption.master_key.is_some());
+        debug!("Encryption Enabled: {}", app_config.encryption.is_enabled());
+        debug!("HSM Enabled: {}", app_config.encryption.hsm_enabled());
         debug!("Encrypted Endpoints: {:?}", app_config.encryption.endpoints);
         debug!("Proxy Headers to Remove: {:?}", app_config.proxy.headers_remove);
         debug!("Proxy Preserve Host: {}", app_config.proxy.preserve_host);
@@ -222,6 +237,7 @@ impl Default for EncryptionSettings {
         Self {
             master_key: None,
             endpoints: Vec::new(),
+            hsm: false,
         }
     }
 }

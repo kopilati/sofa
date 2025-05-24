@@ -12,6 +12,7 @@ use tracing::{debug, error, info};
 use crate::config::AppConfig;
 use crate::audit::AuditLogger;
 use crate::encryption::SharedEncryptionService;
+use crate::hsm::SharedHsmService;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -19,6 +20,7 @@ pub struct AppState {
     pub client: Arc<Client>,
     pub audit_logger: Option<AuditLogger>,
     pub encryption_service: Option<SharedEncryptionService>,
+    pub hsm_service: Option<SharedHsmService>,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
         client: Arc<Client>, 
         audit_logger: Option<AuditLogger>,
         encryption_service: Option<SharedEncryptionService>,
+        hsm_service: Option<SharedHsmService>,
     ) -> Self {
         // Log the CouchDB URL for debugging
         info!("Creating AppState with CouchDB URL: {}", config.couchdb.url);
@@ -36,6 +39,7 @@ impl AppState {
             client, 
             audit_logger,
             encryption_service,
+            hsm_service,
         }
     }
 }

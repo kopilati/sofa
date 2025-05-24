@@ -125,6 +125,19 @@ data:
                 "claim.name": "put",
                 "jsonType.label": "JSON"
               }
+            },{
+              "name": "put-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"^/.*$\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "post",
+                "jsonType.label": "JSON"
+              }
             }
           ]
         },

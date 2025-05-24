@@ -86,6 +86,20 @@ data:
                 "claim.name": "role",
                 "jsonType.label": "String"
               }
+            },
+            {
+              "name": "get-permission",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.value": "[\"^/.*$\"]",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "get",
+                "jsonType.label": "JSON"
+              }
             }
           ]
         },

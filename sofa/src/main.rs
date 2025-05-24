@@ -3,6 +3,7 @@ mod proxy;
 mod auth;
 mod audit;
 mod encryption;
+mod hsm;
 
 use anyhow::Result;
 use axum::{
@@ -24,6 +25,7 @@ use config::AppConfig;
 use proxy::{proxy_handler, AppState};
 use audit::{AuditLogger, audit_middleware};
 use encryption::{EncryptionService, SharedEncryptionService, encrypt_json_middleware, decrypt_json_middleware};
+use hsm::{HsmConfig, create_hsm_service, SharedHsmService};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -90,6 +92,57 @@ async fn main() -> Result<()> {
     } else {
         info!("Encryption disabled (no master key provided)");
     }
+    
+    // Log HSM configuration
+    if config.encryption.hsm {
+        info!("HSM integration enabled");
+    } else {
+        info!("HSM integration disabled");
+    }
+
+    // Initialize HSM service if configured
+    let hsm_service = if config.encryption.hsm_enabled() {
+        // Create HSM configuration based on feature flag
+        #[cfg(feature = "hsm-simulator")]
+        let hsm_config = HsmConfig {
+            enabled: true,
+            key_name: std::env::var("SOFA_HSM_KEY_NAME")
+                .unwrap_or_else(|_| "sofa-master-key".to_string()),
+            simulator_url: std::env::var("SOFA_HSM_SIMULATOR_URL")
+                .unwrap_or_else(|_| "http://hsm-simulator:8080".to_string()),
+        };
+
+        #[cfg(feature = "azure-hsm")]
+        let hsm_config = HsmConfig {
+            enabled: true,
+            keyvault_url: std::env::var("SOFA_HSM_AZURE_KEYVAULT_URL")
+                .unwrap_or_else(|_| "https://your-keyvault.vault.azure.net".to_string()),
+            key_name: std::env::var("SOFA_HSM_AZURE_KEY_NAME")
+                .unwrap_or_else(|_| "sofa-master-key".to_string()),
+            key_version: std::env::var("SOFA_HSM_AZURE_KEY_VERSION").ok(),
+        };
+
+        #[cfg(not(any(feature = "hsm-simulator", feature = "azure-hsm")))]
+        let hsm_config = HsmConfig {
+            enabled: true,
+        };
+        
+        info!("HSM Config: {:?}", hsm_config);
+        
+        match create_hsm_service(hsm_config).await {
+            Ok(service) => {
+                info!("HSM service initialized successfully");
+                Some(service)
+            },
+            Err(e) => {
+                error!("Failed to initialize HSM service: {}", e);
+                None
+            }
+        }
+    } else {
+        info!("HSM integration not enabled");
+        None
+    };
 
     // Initialize encryption service if master key is provided
     let encryption_service = if let Some(master_key) = &config.encryption.master_key {
@@ -122,12 +175,13 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Create application state
+    // Create application state with HSM service
     let app_state = Arc::new(AppState::new(
         config.clone(),
         client,
         audit_logger,
         encryption_service,
+        hsm_service,
     ));
 
     // Configure CORS

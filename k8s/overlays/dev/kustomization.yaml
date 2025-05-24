@@ -8,17 +8,15 @@ resources:
 
 # Generate dev-specific secrets
 secretGenerator:
-- name: sofa-secrets
-  behavior: replace
+- behavior: replace
   literals:
   - master_enc_key=dev-environment-secure-encryption-key-2025
+  name: sofa-secrets
+- behavior: replace
+  literals:
+  - master_key=hsm-simulator-master-key-for-development-only
+  name: hsm-simulator-secret
 
-patchesStrategicMerge:
-- sofa-deployment-patch.yaml
-- sofa-config-patch.yaml
-- keycloak-config-patch.yaml
-- keycloak-deployment-patch.yaml
-- keycloak-service-patch.yaml
 
 # Sets the image tag to :latest for all component images
 # This is appropriate for dev environment with frequent changes
@@ -26,3 +24,13 @@ images:
 - name: sofa
   newName: sofa
   newTag: latest
+- name: hsm-simulator
+  newName: hsm-simulator
+  newTag: latest
+patches:
+- path: sofa-deployment-patch.yaml
+- path: sofa-config-patch.yaml
+- path: keycloak-config-patch.yaml
+- path: keycloak-deployment-patch.yaml
+- path: keycloak-service-patch.yaml
+- path: hsm-simulator-patch.yaml

@@ -3,6 +3,11 @@ name = "sofa"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["hsm-simulator"]
+hsm-simulator = []
+azure-hsm = ["azure-identity", "azure-security-keyvault"]
+
 [dependencies]
 axum = "0.7.4"
 tokio = { version = "1.36.0", features = ["full"] }
@@ -27,6 +32,10 @@ aes-gcm = "0.10.3"
 sha2 = "0.10.8"
 hyper = "1.1.0"
 http-body-util = "0.1.0"
+
+# Optional dependencies for Azure HSM
+azure-identity = { version = "0.10.0", optional = true }
+azure-security-keyvault = { version = "0.10.0", optional = true }
 
 [dev-dependencies]
 assert_matches = "1.5.0"

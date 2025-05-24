@@ -6,8 +6,8 @@ COPY . .
 # Install dependencies including OpenSSL development libraries
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
-# Build with release profile
-RUN cargo build --release
+# Build with release profile and hsm-simulator feature
+RUN cargo build --release --features hsm-simulator
 
 # Runtime stage
 FROM debian:bookworm-slim
