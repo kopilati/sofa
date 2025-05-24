@@ -25,7 +25,7 @@ use config::AppConfig;
 use proxy::{proxy_handler, AppState};
 use audit::{AuditLogger, audit_middleware};
 use encryption::{EncryptionService, SharedEncryptionService, encrypt_json_middleware, decrypt_json_middleware};
-use hsm::{HsmConfig, create_hsm_service, SharedHsmService};
+use hsm::{HsmConfig, create_hsm_service};
 
 #[tokio::main]
 async fn main() -> Result<()> {

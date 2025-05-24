@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use config::{Config, ConfigError, File, Environment};
 use tracing::{debug, info, error};
 
-// Import the feature-gated HsmConfig
-use crate::hsm::HsmConfig;
+// Import authorization types
+use crate::auth::AuthorizationConfig;
 
 // Server configuration settings
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -28,6 +28,9 @@ pub struct AuthSettings {
     pub issuer: Option<String>,
     pub audience: Option<String>,
     pub jwks_url: Option<String>,
+    /// Istio-like authorization rules (handled separately from env vars)
+    #[serde(skip_deserializing)]
+    pub authorization: Option<AuthorizationConfig>,
 }
 
 // Audit logging settings
@@ -158,13 +161,32 @@ impl AppConfig {
         };
         
         // Try to deserialize the configuration to our AppConfig struct
-        let app_config: AppConfig = match config.try_deserialize() {
+        let mut app_config: AppConfig = match config.try_deserialize() {
             Ok(c) => c,
             Err(e) => {
                 error!("Failed to deserialize configuration: {}", e);
                 return Err(e);
             }
         };
+
+        // Handle authorization configuration separately from YAML string
+        if let Ok(auth_yaml) = env::var("SOFA_AUTH_AUTHORIZATION") {
+            debug!("Found authorization YAML configuration");
+            match serde_yaml::from_str::<AuthorizationConfig>(&auth_yaml) {
+                Ok(auth_config) => {
+                    info!("Successfully parsed authorization configuration with {} rules", auth_config.rules.len());
+                    app_config.auth.authorization = Some(auth_config);
+                }
+                Err(e) => {
+                    error!("Failed to parse authorization YAML: {}", e);
+                    debug!("Authorization YAML content: {}", auth_yaml);
+                    // Continue without authorization rules rather than failing completely
+                }
+            }
+        } else {
+            debug!("No authorization YAML configuration found in SOFA_AUTH_AUTHORIZATION");
+        }
+        
         let ac = app_config.clone();
         // Print key configuration values for debugging
         debug!("Loaded configuration:");
@@ -175,6 +197,12 @@ impl AppConfig {
             debug!("Auth Issuer: {}", app_config.auth.issuer.unwrap_or_default());
             debug!("Auth Audience: {}", app_config.auth.audience.unwrap_or_default());
             debug!("Auth JWKS URL: {}", app_config.auth.jwks_url.unwrap_or_default());
+            if let Some(ref auth_config) = app_config.auth.authorization {
+                debug!("Authorization rules: {} configured", auth_config.rules.len());
+                debug!("Default action: {:?}", auth_config.default_action.as_ref().unwrap_or(&crate::auth::DefaultAction::Deny));
+            } else {
+                debug!("No authorization rules configured, will use legacy system");
+            }
         }
         debug!("Audit Enabled: {}", app_config.audit.enabled);
         if let Some(url) = &app_config.audit.service_url {
@@ -219,6 +247,7 @@ impl Default for AuthSettings {
             issuer: None,
             audience: None,
             jwks_url: None,
+            authorization: None,
         }
     }
 }

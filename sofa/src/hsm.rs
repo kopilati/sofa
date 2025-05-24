@@ -1,6 +1,9 @@
 use anyhow::{Result, anyhow};
+#[cfg(feature = "azure-hsm")]
 use azure_identity::DefaultAzureCredential;
+#[cfg(feature = "azure-hsm")]
 use azure_security_keyvault::KeyClient;
+use futures::future::BoxFuture;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -157,19 +160,19 @@ struct DecryptResponse {
 /// Trait defining the operations that an HSM service provides
 trait HsmProvider {
     /// Initialize the HSM service by loading keys
-    fn initialize(&self) -> tokio::sync::futures::BoxFuture<'_, Result<()>>;
+    fn initialize(&self) -> BoxFuture<'_, Result<()>>;
     
     /// Get the loaded key material
-    fn get_key(&self) -> tokio::sync::futures::BoxFuture<'_, Option<Vec<u8>>>;
+    fn get_key(&self) -> BoxFuture<'_, Option<Vec<u8>>>;
     
     /// Check if HSM is enabled and initialized
-    fn is_available(&self) -> tokio::sync::futures::BoxFuture<'_, bool>;
+    fn is_available(&self) -> BoxFuture<'_, bool>;
     
     /// Encrypt a value using the HSM
-    fn encrypt(&self, plaintext: &[u8]) -> tokio::sync::futures::BoxFuture<'_, Result<Vec<u8>>>;
+    fn encrypt(&self, plaintext: Vec<u8>) -> BoxFuture<'_, Result<Vec<u8>>>;
     
     /// Decrypt a value using the HSM
-    fn decrypt(&self, ciphertext: &[u8]) -> tokio::sync::futures::BoxFuture<'_, Result<Vec<u8>>>;
+    fn decrypt(&self, ciphertext: Vec<u8>) -> BoxFuture<'_, Result<Vec<u8>>>;
 }
 
 // Simulator implementation of HSM Provider
@@ -199,7 +202,7 @@ impl HsmSimulator {
 
 #[cfg(feature = "hsm-simulator")]
 impl HsmProvider for HsmSimulator {
-    fn initialize<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, Result<()>> {
+    fn initialize<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if !self.config.enabled {
                 debug!("HSM integration is disabled, skipping initialization");
@@ -265,94 +268,98 @@ impl HsmProvider for HsmSimulator {
         })
     }
     
-    fn get_key<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, Option<Vec<u8>>> {
+    fn get_key<'a>(&'a self) -> BoxFuture<'a, Option<Vec<u8>>> {
         Box::pin(async move {
             let key_guard = self.key_material.read().await;
             key_guard.clone()
         })
     }
     
-    fn is_available<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, bool> {
+    fn is_available<'a>(&'a self) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             self.config.enabled && self.key_material.read().await.is_some()
         })
     }
     
-    fn encrypt<'a>(&'a self, plaintext: &'a [u8]) -> tokio::sync::futures::BoxFuture<'a, Result<Vec<u8>>> {
+    fn encrypt<'a>(&'a self, plaintext: Vec<u8>) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             if !self.config.enabled {
-                return Err(anyhow!("HSM integration is disabled"));
+                return Err(anyhow!("HSM simulator is not enabled"));
             }
+
+            debug!("Encrypting {} bytes using HSM simulator", plaintext.len());
+            let url = format!("{}/encrypt", self.config.simulator_url);
             
-            let key_name = &self.config.key_name;
-            let simulator_url = &self.config.simulator_url;
-            
-            // Encode plaintext as base64
-            let plaintext_b64 = BASE64.encode(plaintext);
-            
-            // Call encrypt API on simulator
-            let response = self.http_client
-                .post(&format!("{}/keys/{}/encrypt", simulator_url, key_name))
-                .json(&serde_json::json!({
-                    "key_name": key_name,
-                    "algorithm": "RSA-OAEP-256",
-                    "plaintext": plaintext_b64
-                }))
+            let request_body = serde_json::json!({
+                "key_name": self.config.key_name,
+                "algorithm": "AES256-GCM",
+                "value": BASE64.encode(&plaintext)
+            });
+
+            let response = self
+                .http_client
+                .post(&url)
+                .json(&request_body)
                 .send()
-                .await?;
-            
-            if !response.status().is_success() {
-                let error_text = response.text().await?;
-                error!("Failed to encrypt data with HSM simulator: {}", error_text);
-                return Err(anyhow!("Failed to encrypt data with HSM simulator: {}", error_text));
+                .await
+                .map_err(|e| anyhow!("Failed to send encrypt request: {}", e))?;
+
+            if response.status().is_success() {
+                let encrypt_response: EncryptResponse = response
+                    .json()
+                    .await
+                    .map_err(|e| anyhow!("Failed to parse encrypt response: {}", e))?;
+                
+                let ciphertext = BASE64
+                    .decode(&encrypt_response.value)
+                    .map_err(|e| anyhow!("Failed to decode base64 ciphertext: {}", e))?;
+                
+                debug!("Successfully encrypted {} bytes", ciphertext.len());
+                Ok(ciphertext)
+            } else {
+                Err(anyhow!("HSM simulator encrypt failed with status: {}", response.status()))
             }
-            
-            // Parse response
-            let encrypt_response: EncryptResponse = response.json().await?;
-            
-            // Decode the base64 ciphertext
-            let ciphertext = BASE64.decode(encrypt_response.value)?;
-            
-            Ok(ciphertext)
         })
     }
     
-    fn decrypt<'a>(&'a self, ciphertext: &'a [u8]) -> tokio::sync::futures::BoxFuture<'a, Result<Vec<u8>>> {
+    fn decrypt<'a>(&'a self, ciphertext: Vec<u8>) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             if !self.config.enabled {
-                return Err(anyhow!("HSM integration is disabled"));
+                return Err(anyhow!("HSM simulator is not enabled"));
             }
+
+            debug!("Decrypting {} bytes using HSM simulator", ciphertext.len());
+            let url = format!("{}/decrypt", self.config.simulator_url);
             
-            let key_name = &self.config.key_name;
-            let simulator_url = &self.config.simulator_url;
-            
-            // Encode ciphertext as base64
-            let ciphertext_b64 = BASE64.encode(ciphertext);
-            
-            // Call decrypt API on simulator
-            let response = self.http_client
-                .post(&format!("{}/keys/{}/decrypt", simulator_url, key_name))
-                .json(&serde_json::json!({
-                    "key_name": key_name,
-                    "algorithm": "RSA-OAEP-256",
-                    "ciphertext": ciphertext_b64
-                }))
+            let request_body = serde_json::json!({
+                "key_name": self.config.key_name,
+                "algorithm": "AES256-GCM",
+                "value": BASE64.encode(&ciphertext)
+            });
+
+            let response = self
+                .http_client
+                .post(&url)
+                .json(&request_body)
                 .send()
-                .await?;
-            
-            if !response.status().is_success() {
-                let error_text = response.text().await?;
-                error!("Failed to decrypt data with HSM simulator: {}", error_text);
-                return Err(anyhow!("Failed to decrypt data with HSM simulator: {}", error_text));
+                .await
+                .map_err(|e| anyhow!("Failed to send decrypt request: {}", e))?;
+
+            if response.status().is_success() {
+                let decrypt_response: DecryptResponse = response
+                    .json()
+                    .await
+                    .map_err(|e| anyhow!("Failed to parse decrypt response: {}", e))?;
+                
+                let plaintext = BASE64
+                    .decode(&decrypt_response.value)
+                    .map_err(|e| anyhow!("Failed to decode base64 plaintext: {}", e))?;
+                
+                debug!("Successfully decrypted {} bytes", plaintext.len());
+                Ok(plaintext)
+            } else {
+                Err(anyhow!("HSM simulator decrypt failed with status: {}", response.status()))
             }
-            
-            // Parse response
-            let decrypt_response: DecryptResponse = response.json().await?;
-            
-            // Decode the base64 plaintext
-            let plaintext = BASE64.decode(decrypt_response.value)?;
-            
-            Ok(plaintext)
         })
     }
 }
@@ -402,7 +409,7 @@ impl AzureHsm {
 
 #[cfg(feature = "azure-hsm")]
 impl HsmProvider for AzureHsm {
-    fn initialize<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, Result<()>> {
+    fn initialize<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if !self.config.enabled {
                 debug!("HSM integration is disabled, skipping initialization");
@@ -439,20 +446,20 @@ impl HsmProvider for AzureHsm {
         })
     }
     
-    fn get_key<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, Option<Vec<u8>>> {
+    fn get_key<'a>(&'a self) -> BoxFuture<'a, Option<Vec<u8>>> {
         Box::pin(async move {
             let key_guard = self.key_material.read().await;
             key_guard.clone()
         })
     }
     
-    fn is_available<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, bool> {
+    fn is_available<'a>(&'a self) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             self.config.enabled && self.key_material.read().await.is_some()
         })
     }
     
-    fn encrypt<'a>(&'a self, _plaintext: &'a [u8]) -> tokio::sync::futures::BoxFuture<'a, Result<Vec<u8>>> {
+    fn encrypt<'a>(&'a self, _plaintext: Vec<u8>) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             // Stub implementation for Azure Key Vault
             error!("Azure Key Vault encryption not implemented");
@@ -460,7 +467,7 @@ impl HsmProvider for AzureHsm {
         })
     }
     
-    fn decrypt<'a>(&'a self, _ciphertext: &'a [u8]) -> tokio::sync::futures::BoxFuture<'a, Result<Vec<u8>>> {
+    fn decrypt<'a>(&'a self, _ciphertext: Vec<u8>) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             // Stub implementation for Azure Key Vault
             error!("Azure Key Vault decryption not implemented");
@@ -484,28 +491,28 @@ impl NullHsmProvider {
 
 #[cfg(not(any(feature = "hsm-simulator", feature = "azure-hsm")))]
 impl HsmProvider for NullHsmProvider {
-    fn initialize<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, Result<()>> {
+    fn initialize<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             info!("No HSM provider is enabled via feature flags");
             Ok(())
         })
     }
     
-    fn get_key<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, Option<Vec<u8>>> {
+    fn get_key<'a>(&'a self) -> BoxFuture<'a, Option<Vec<u8>>> {
         Box::pin(async move { None })
     }
     
-    fn is_available<'a>(&'a self) -> tokio::sync::futures::BoxFuture<'a, bool> {
+    fn is_available<'a>(&'a self) -> BoxFuture<'a, bool> {
         Box::pin(async move { false })
     }
     
-    fn encrypt<'a>(&'a self, _plaintext: &'a [u8]) -> tokio::sync::futures::BoxFuture<'a, Result<Vec<u8>>> {
+    fn encrypt<'a>(&'a self, _plaintext: Vec<u8>) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             Err(anyhow!("No HSM provider is enabled via feature flags"))
         })
     }
     
-    fn decrypt<'a>(&'a self, _ciphertext: &'a [u8]) -> tokio::sync::futures::BoxFuture<'a, Result<Vec<u8>>> {
+    fn decrypt<'a>(&'a self, _ciphertext: Vec<u8>) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             Err(anyhow!("No HSM provider is enabled via feature flags"))
         })
@@ -569,12 +576,12 @@ impl HsmService {
     
     /// Encrypt a value using the HSM
     pub async fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        self.provider.encrypt(plaintext).await
+        self.provider.encrypt(plaintext.to_vec()).await
     }
     
     /// Decrypt a value using the HSM
     pub async fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
-        self.provider.decrypt(ciphertext).await
+        self.provider.decrypt(ciphertext.to_vec()).await
     }
 }
 
