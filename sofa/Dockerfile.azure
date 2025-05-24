@@ -1,0 +1,46 @@
+FROM rust:slim AS builder
+
+WORKDIR /usr/src/sofa
+COPY . .
+
+# Install dependencies including OpenSSL development libraries
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+# Build with release profile and azure-hsm feature
+RUN cargo build --release --no-default-features --features azure-hsm
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y ca-certificates libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+RUN mkdir -p /app/config
+COPY ./config/*.yaml /app/config/
+
+# Copy the binary from the builder stage
+COPY --from=builder /usr/src/sofa/target/release/sofa /app/sofa
+
+# Create config directory
+RUN mkdir -p /app/config
+
+# Set environment variables
+ENV SOFA_SERVER_PORT=3000
+ENV SOFA_COUCHDB_URL=http://dev-couchdb-service:5984
+ENV SOFA_COUCHDB_USERNAME=admin
+ENV SOFA_COUCHDB_PASSWORD=password
+ENV CONFIG_DIR=/app/config
+
+# Azure Key Vault configuration
+ENV SOFA_ENCRYPTION_HSM=true
+ENV AZURE_TENANT_ID=your-tenant-id
+ENV AZURE_CLIENT_ID=your-client-id
+ENV AZURE_CLIENT_SECRET=your-client-secret
+ENV SOFA_HSM_AZURE_KEYVAULT_URL=https://your-keyvault.vault.azure.net/
+ENV SOFA_HSM_AZURE_KEY_NAME=your-key-name
+
+# Expose the server port
+EXPOSE 3000
+
+# Run the binary
+CMD ["/app/sofa"] 

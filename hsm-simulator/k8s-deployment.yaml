@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hsm-simulator
+  labels:
+    app: hsm-simulator
+spec:
+  ports:
+  - port: 8080
+    name: http
+    targetPort: 8080
+  selector:
+    app: hsm-simulator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hsm-simulator
+  labels:
+    app: hsm-simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hsm-simulator
+  template:
+    metadata:
+      labels:
+        app: hsm-simulator
+    spec:
+      containers:
+      - name: hsm-simulator
+        image: hsm-simulator:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: hsm-simulator-secret
+              key: master_key
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hsm-simulator-secret
+type: Opaque
+stringData:
+  master_key: "hsm-simulator-master-key-for-development-only"

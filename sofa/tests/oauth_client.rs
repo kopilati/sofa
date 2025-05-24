@@ -1,7 +1,6 @@
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Token endpoint response
 #[derive(Debug, Deserialize)]

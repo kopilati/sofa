@@ -387,6 +387,46 @@ tasks:
       echo "Services are available in the cluster. Use port-forwarding to access them."
       echo "Run 'task port-forward' to access the services."
 
+  apply-dev:
+    desc: Apply the dev overlay with extra validation
+    cmds:
+    - |
+      echo "Validating kustomize manifests before applying..."
+
+      # Check if kustomize can build the manifests without errors
+      if ! kubectl kustomize k8s/overlays/dev > /dev/null; then
+        echo "❌ Error in kustomize build. Please check your manifests."
+        exit 1
+      fi
+
+      echo "✅ Kustomize validation passed"
+
+      # Apply the dev overlay
+      echo "Applying dev overlay..."
+      kubectl apply -k k8s/overlays/dev
+
+      if [ $? -eq 0 ]; then
+        echo "✅ Successfully applied dev overlay"
+        
+        echo "Waiting for HSM simulator to be ready..."
+        kubectl wait --for=condition=available deployment/dev-hsm-simulator --timeout=60s || true
+        
+        echo "Waiting for Sofa to be ready..."
+        kubectl wait --for=condition=available deployment/dev-sofa --timeout=60s || true
+        
+        echo "Waiting for CouchDB to be ready..."
+        kubectl wait --for=condition=available deployment/dev-couchdb --timeout=90s || true
+        
+        echo "Waiting for Keycloak to be ready..."
+        kubectl wait --for=condition=available deployment/dev-keycloak --timeout=120s || true
+        
+        echo "All services should now be available."
+        echo "Run 'task port-forward-all' to access all services."
+      else
+        echo "❌ Failed to apply dev overlay"
+        exit 1
+      fi
+
   enable-audit:
     desc: Enable audit logging in SOFA by configuring it to use the audit service
     cmds:
