@@ -7,6 +7,55 @@ data:
   # Production-specific configuration - uses the prefixed service names
   auth_issuer: "http://prod-keycloak-service:8080/auth/realms/sofa"
   auth_jwks_url: "http://prod-keycloak-service:8080/auth/realms/sofa/protocol/openid-connect/certs"
+
+  # Production Authorization Rules - More restrictive than development
+  auth_authorization: |
+    default_action: deny
+    rules:
+      # Rule 1: Admin users get full access
+      - name: "admin-full-access"
+        when:
+          - claim: "role"
+            values: "admin"
+      
+      # Rule 2: Service accounts for automated processes
+      - name: "service-account-access"
+        when:
+          - claim: "service_account"
+            values: true
+          - claim: "environment"
+            values: "production"
+      
+      # Rule 3: Production users with strict organization requirements
+      - name: "production-user-access"
+        paths:
+          - "^/[^_][^/]+/.*"           # Database documents only
+          - "^/[^_][^/]+/_bulk_docs"   # Bulk operations only
+        methods: ["GET", "POST", "PUT"]  # No DELETE in production via this rule
+        when:
+          - claim: "organization"
+            values: "Production Organization"
+          - claim: "role"
+            values: ["user", "admin"]
+          - claim: "environment"
+            values: "production"
+      
+      # Rule 4: Limited system access for monitoring
+      - name: "system-monitoring"
+        methods: ["GET", "HEAD"]
+        paths:
+          - "^/_all_dbs$"       # List databases for monitoring
+        when:
+          - claim: "role"
+            values: ["admin", "monitor"]
+
   # Production encrypted endpoints - only document operations, no development endpoints
   # Document operations in CouchDB: /db_name/{doc_id},  /db_name/_bulk_docs, etc.
   encrypted_endpoints: "^/[^_][^/]+/[^_].*,^/[^_][^/]+/_bulk_docs"
+
+  # Production HSM configuration
+  encryption_hsm: "true"
+
+  # Production audit configuration
+  audit_enabled: "true"
+  audit_log_service_url: "http://prod-audit-service/audit"

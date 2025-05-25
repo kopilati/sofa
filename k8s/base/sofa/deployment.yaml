@@ -58,6 +58,13 @@ spec:
               name: sofa-config
               key: auth_jwks_url
               optional: true
+        # New Istio-like Authorization Rules
+        - name: SOFA_AUTH_AUTHORIZATION
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: auth_authorization
+              optional: true
         # Audit Configuration
         - name: SOFA_AUDIT_ENABLED
           valueFrom:
@@ -83,6 +90,37 @@ spec:
             configMapKeyRef:
               name: sofa-config
               key: encrypted_endpoints
+              optional: true
+        # Proxy Configuration
+        - name: SOFA_PROXY_HEADERS_REMOVE
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: proxy_headers_remove
+              optional: true
+        - name: SOFA_PROXY_PRESERVE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: proxy_preserve_host
+              optional: true
+        - name: SOFA_CHUNKED_ENCODING
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: chunked_encoding
+              optional: true
+        - name: SOFA_PROXY_BUFFER_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: proxy_buffer_size
+              optional: true
+        - name: SOFA_PROXY_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: sofa-config
+              key: proxy_timeout
               optional: true
         resources:
           limits:

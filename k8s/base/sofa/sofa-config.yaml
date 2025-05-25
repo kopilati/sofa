@@ -7,10 +7,23 @@ data:
   auth_issuer: "http://localhost:30082/realms/sofa"
   auth_audience: "sofa-client"
   auth_jwks_url: "http://keycloak-service:8080/auth/realms/sofa/protocol/openid-connect/certs"
+  # Basic authorization configuration (override in overlays for specific rules)
+  auth_authorization: |
+    default_action: deny
+    rules:
+      # Default rule: Admin users get full access
+      - name: "admin-full-access"
+        when:
+          - claim: "role"
+            values: "admin"
+
   audit_enabled: "true"
   audit_log_service_url: "http://audit-service:8080/logs"
+
   # Base configuration for encrypted endpoints - document operations
   encrypted_endpoints: "^/[^_][^/]+/[^_].*,^/[^_][^/]+/_design/.*,^/[^_][^/]+/_bulk_docs,^/[^_][^/]+/_find,^/[^_][^/]+/_index"
+  # HSM configuration
+  encryption_hsm: "false"
 
   proxy_headers_remove: "transfer-encoding"
   proxy_preserve_host: "true"

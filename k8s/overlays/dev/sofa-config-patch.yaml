@@ -6,6 +6,7 @@ data:
   auth_enabled: "true"
   # Development configuration for Keycloak URLs
   # Issuer must match the URL from which tokens are issued
+  auth_issuer: "http://dev-keycloak-service:8080/realms/sofa"
   auth_audience: "sofa-client"
   # JWKS URL must be reachable by Sofa for token validation
   auth_jwks_url: "http://dev-keycloak-service:8080/realms/sofa/protocol/openid-connect/certs"
@@ -64,10 +65,15 @@ data:
           - claim: "role"
             values: ["admin", "user"]
 
+  # Audit configuration for development
+  audit_enabled: "true"
+  audit_log_service_url: "http://dev-audit-service/audit"
+
   # Encryption configuration for development
   encrypted_endpoints: "^/[^_][^/]+/[^_].*,^/[^_][^/]+/_design/.*,^/[^_][^/]+/_bulk_docs,^/[^_][^/]+/_find,^/[^_][^/]+/_index"
   # Enable HSM integration
   encryption_hsm: "true"
+
   # Feature-specific HSM configuration (These are read by main.rs directly)
   # HSM simulator specific config (used only with hsm-simulator feature)
   SOFA_HSM_SIMULATOR_URL: "http://dev-hsm-simulator:8080"
@@ -75,6 +81,7 @@ data:
   # Azure HSM specific config (used only with azure-hsm feature)
   SOFA_HSM_AZURE_KEYVAULT_URL: "https://your-keyvault.vault.azure.net"
   SOFA_HSM_AZURE_KEY_NAME: "sofa-master-key"
+
   # Proxy configuration to fix "empty reply from server" issue
   proxy_headers_remove: "transfer-encoding"
   proxy_preserve_host: "true"
