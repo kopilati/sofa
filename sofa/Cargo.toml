@@ -3,6 +3,10 @@ name = "sofa"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "sofa"
+path = "src/lib.rs"
+
 [features]
 default = ["hsm-simulator"]
 hsm-simulator = []
@@ -41,7 +45,13 @@ azure_security_keyvault = { version = "0.10.0", optional = true }
 
 [dev-dependencies]
 assert_matches = "1.5.0"
+tower = "0.5.0"
+lazy_static = "1.4.0"
 
 [[bin]]
 name = "oauth_client"
 path = "tests/oauth_client.rs"
+
+[[bin]]
+name = "sofa"
+path = "src/main.rs"

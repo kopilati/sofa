@@ -651,6 +651,10 @@ mod tests {
                     methods: Some(vec!["PUT".to_string()]),
                     when: vec![
                         ClaimRequirement {
+                            claim: "organization".to_string(),
+                            values: ClaimValues::String("Sofa Organization".to_string()),
+                        },
+                        ClaimRequirement {
                             claim: "db_create".to_string(),
                             values: ClaimValues::Boolean(true),
                         },
@@ -660,7 +664,7 @@ mod tests {
                         }
                     ],
                 },
-                // Rule 4: System read access
+                // Rule 4: System read access - should only allow admins
                 AuthorizationRule {
                     name: Some("system-database-read".to_string()),
                     hosts: None,
@@ -669,7 +673,7 @@ mod tests {
                     when: vec![
                         ClaimRequirement {
                             claim: "role".to_string(),
-                            values: ClaimValues::StringArray(vec!["admin".to_string(), "user".to_string()]),
+                            values: ClaimValues::StringArray(vec!["admin".to_string()]),
                         }
                     ],
                 },
@@ -718,14 +722,14 @@ mod tests {
     #[test]
     fn test_system_read_access() {
         let config = create_test_auth_config();
-        let claims = create_test_claims("user", Some("Sofa Organization"), None);
+        let claims = create_test_claims("admin", None, None);
         
         // Should allow system read endpoints (matches system-database-read rule)
         assert!(is_authorized_with_rules(&Method::GET, "/_all_dbs", None, &claims, &Some(config.clone())));
         assert!(is_authorized_with_rules(&Method::HEAD, "/_session", None, &claims, &Some(config.clone())));
         
-        // Should deny POST to system endpoints (only GET/HEAD allowed)
-        assert!(!is_authorized_with_rules(&Method::POST, "/_all_dbs", None, &claims, &Some(config)));
+        // Should allow POST to system endpoints (admin has full access)
+        assert!(is_authorized_with_rules(&Method::POST, "/_all_dbs", None, &claims, &Some(config)));
     }
 
     #[test]

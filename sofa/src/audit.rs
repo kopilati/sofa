@@ -5,7 +5,7 @@ use axum::{
     response::Response,
 };
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -14,7 +14,7 @@ use crate::config::AppConfig;
 use crate::proxy::AppState;
 use crate::auth::UserId;
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditLogEntry {
     pub method: String,
     pub path: String,

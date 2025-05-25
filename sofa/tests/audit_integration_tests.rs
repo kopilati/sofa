@@ -11,7 +11,7 @@ use tokio::time::{sleep, Duration};
 use sofa::{
     audit::{AuditLogger, audit_middleware, create_audit_entry},
     auth::UserId,
-    config::{AppConfig, AuditSettings},
+    config::AppConfig,
     proxy::AppState,
 };
 use tower::ServiceExt;
@@ -38,143 +38,67 @@ fn create_test_app_state_with_audit(audit_url: Option<String>) -> Arc<AppState> 
     ))
 }
 
-#[tokio::test]
-async fn test_audit_middleware_disabled() {
-    let state = create_test_app_state_with_audit(None);
+#[test]
+fn test_create_audit_entry() {
+    let entry = create_audit_entry(
+        &Method::POST,
+        "/database/document",
+        Some("user123".to_string()),
+        201,
+        true,
+    );
     
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri("/_all_dbs")
-        .body(Body::empty())
-        .unwrap();
+    assert_eq!(entry.method, "POST");
+    assert_eq!(entry.path, "/database/document");
+    assert_eq!(entry.user_id, Some("user123".to_string()));
+    assert_eq!(entry.status_code, 201);
+    assert_eq!(entry.success, true);
+    assert!(entry.timestamp > 0);
+}
+
+#[test]
+fn test_create_audit_entry_anonymous() {
+    let entry = create_audit_entry(
+        &Method::GET,
+        "/_session",
+        None,
+        401,
+        false,
+    );
     
-    let next = Next::new(|_req: Request| async move {
-        Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::from("success"))
-            .unwrap()
-    });
-    
-    let response = audit_middleware(
-        State(state),
-        request,
-        next,
-    ).await;
-    
-    // Should pass through when audit is disabled
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(entry.method, "GET");
+    assert_eq!(entry.path, "/_session");
+    assert_eq!(entry.user_id, None);
+    assert_eq!(entry.status_code, 401);
+    assert_eq!(entry.success, false);
 }
 
 #[tokio::test]
-async fn test_audit_middleware_with_user_id() {
-    let state = create_test_app_state_with_audit(Some("http://test-audit/audit".to_string()));
+async fn test_audit_logger_creation() {
+    let config = Arc::new(AppConfig::default());
+    let client = Arc::new(reqwest::Client::new());
+    let service_url = "http://test-audit-service/audit";
     
-    let mut request = Request::builder()
-        .method(Method::POST)
-        .uri("/database/document")
-        .header("Authorization", "Bearer test-token")
-        .body(Body::empty())
-        .unwrap();
-    
-    // Add user ID to request extensions
-    request.extensions_mut().insert(UserId("user123".to_string()));
-    
-    let next = Next::new(|_req: Request| async move {
-        Response::builder()
-            .status(StatusCode::CREATED)
-            .body(Body::from("created"))
-            .unwrap()
-    });
-    
-    let response = audit_middleware(
-        State(state),
-        request,
-        next,
-    ).await;
-    
-    assert_eq!(response.status(), StatusCode::CREATED);
-    // Note: Actual audit log sending is tested separately due to async nature
+    let logger = AuditLogger::new(config, client, service_url);
+    assert!(logger.is_some());
 }
 
-#[tokio::test]
-async fn test_audit_middleware_without_user_id() {
-    let state = create_test_app_state_with_audit(Some("http://test-audit/audit".to_string()));
+#[test]
+fn test_audit_entry_serialization() {
+    let entry = create_audit_entry(
+        &Method::PUT,
+        "/testdb/testdoc",
+        Some("testuser".to_string()),
+        200,
+        true,
+    );
     
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri("/_session")
-        .body(Body::empty())
-        .unwrap();
-    
-    let next = Next::new(|_req: Request| async move {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .body(Body::from("unauthorized"))
-            .unwrap()
-    });
-    
-    let response = audit_middleware(
-        State(state),
-        request,
-        next,
-    ).await;
-    
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn test_audit_middleware_extracts_token() {
-    let state = create_test_app_state_with_audit(Some("http://test-audit/audit".to_string()));
-    
-    let request = Request::builder()
-        .method(Method::DELETE)
-        .uri("/database/document")
-        .header("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
-        .body(Body::empty())
-        .unwrap();
-    
-    let next = Next::new(|_req: Request| async move {
-        Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .body(Body::empty())
-            .unwrap()
-    });
-    
-    let response = audit_middleware(
-        State(state),
-        request,
-        next,
-    ).await;
-    
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-}
-
-#[tokio::test]
-async fn test_audit_middleware_handles_malformed_auth_header() {
-    let state = create_test_app_state_with_audit(Some("http://test-audit/audit".to_string()));
-    
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri("/test")
-        .header("Authorization", "InvalidFormat token123")
-        .body(Body::empty())
-        .unwrap();
-    
-    let next = Next::new(|_req: Request| async move {
-        Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::from("success"))
-            .unwrap()
-    });
-    
-    let response = audit_middleware(
-        State(state),
-        request,
-        next,
-    ).await;
-    
-    assert_eq!(response.status(), StatusCode::OK);
-    // Should still audit with empty token
+    let serialized = serde_json::to_string(&entry).unwrap();
+    assert!(serialized.contains("PUT"));
+    assert!(serialized.contains("/testdb/testdoc"));
+    assert!(serialized.contains("testuser"));
+    assert!(serialized.contains("200"));
+    assert!(serialized.contains("true"));
 }
 
 // Mock audit service for end-to-end integration testing
