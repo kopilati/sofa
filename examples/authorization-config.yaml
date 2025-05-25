@@ -1,0 +1,97 @@
+# Example Authorization Configuration for Sofa
+# This demonstrates the new Istio-like authorization rules
+
+server:
+  port: 3000
+
+couchdb:
+  url: "http://localhost:5984"
+  username: "admin"
+  password: "password"
+
+auth:
+  enabled: true
+  issuer: "http://localhost:30082/realms/sofa"
+  audience: "sofa-client"
+  jwks_url: "http://keycloak-service:8080/realms/sofa/protocol/openid-connect/certs"
+
+  # New Istio-like authorization rules
+  authorization:
+    default_action: deny # Default to deny if no rules match
+
+    rules:
+    # Rule 1: Admin users can access everything
+    - name: "admin-full-access"
+      when:
+      - claim: "role"
+        values: "admin"
+
+    # Rule 2: Database operations for specific organization
+    - name: "org-database-access"
+      paths:
+      - "^/[^_][^/]+/.*" # Database documents
+      - "^/[^_][^/]+/_design/.*" # Design documents
+      when:
+      - claim: "organization"
+        values: [ "Acme Corp", "Beta Inc" ]
+      - claim: "role"
+        values: [ "user", "admin" ]
+
+    # Rule 3: Read-only access to specific paths
+    - name: "readonly-access"
+      methods: [ "GET", "HEAD" ]
+      paths:
+      - "^/public-.*" # Public databases
+      when:
+      - claim: "access_level"
+        values: "read"
+
+    # Rule 4: Service account access with boolean claim
+    - name: "service-account-access"
+      when:
+      - claim: "service_account"
+        values: true
+      - claim: "sub"
+        values:
+          regex:
+            pattern: "^service-.*"
+
+    # Rule 5: Host-specific rules
+    - name: "staging-host-access"
+      hosts:
+      - ".*\\.staging\\..*"
+      when:
+      - claim: "environment"
+        values: [ "staging", "development" ]
+
+    # Rule 6: Multiple method access with regex path matching
+    - name: "api-endpoint-access"
+      methods: [ "GET", "POST", "PUT" ]
+      paths:
+      - "^/api/v[0-9]+/.*"
+      when:
+      - claim: "api_access"
+        values: true
+      - claim: "role"
+        values: [ "api_user", "admin" ]
+
+audit:
+  enabled: true
+  service_url: "http://audit-service:8080/logs"
+
+encryption:
+  master_key: "dev-environment-secure-encryption-key-2025"
+  endpoints:
+  - "^/[^_][^/]+/[^_].*"
+  - "^/[^_][^/]+/_design/.*"
+  - "^/[^_][^/]+/_bulk_docs"
+  - "^/[^_][^/]+/_find"
+  - "^/[^_][^/]+/_index"
+  hsm: false
+
+proxy:
+  headers_remove: [ "transfer-encoding" ]
+  preserve_host: true
+  chunked_encoding: false
+  buffer_size: "10mb"
+  timeout: 60000

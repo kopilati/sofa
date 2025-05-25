@@ -1,0 +1,79 @@
+server:
+  port: 3000
+
+couchdb:
+  url: "http://localhost:5984"
+  username: "admin"
+  password: "password"
+
+auth:
+  enabled: true
+  issuer: "http://localhost:30082/realms/sofa"
+  audience: "sofa-client"
+  jwks_url: "http://localhost:8080/realms/sofa/protocol/openid-connect/certs"
+
+  # New Istio-like authorization rules
+  authorization:
+    default_action: deny
+    rules:
+    # Rule 1: Admin users get full access
+    - name: "admin-full-access"
+      when:
+      - claim: "role"
+        values: "admin"
+
+    # Rule 2: Regular users with organization and role claims
+    - name: "user-database-access"
+      paths:
+      - "^/[^_][^/]+/.*" # Database documents
+      - "^/[^_][^/]+/_design/.*" # Design documents
+      - "^/[^_][^/]+/_bulk_docs" # Bulk operations
+      - "^/[^_][^/]+/_find" # Find operations
+      - "^/[^_][^/]+/_index" # Index operations
+      when:
+      - claim: "organization"
+        values: "Sofa Organization"
+      - claim: "role"
+        values: [ "user", "admin" ]
+
+    # Rule 3: Database creation permission
+    - name: "database-creation"
+      methods: [ "PUT" ]
+      paths:
+      - "^/[^_][^/]+/?$" # Database creation endpoint
+      when:
+      - claim: "db_create"
+        values: true
+      - claim: "role"
+        values: [ "admin", "user" ]
+
+    # Rule 4: System database read access (for topology client)
+    - name: "system-database-read"
+      methods: [ "GET", "HEAD" ]
+      paths:
+      - "^/_all_dbs$" # List all databases
+      - "^/_.*" # System endpoints
+      when:
+      - claim: "role"
+        values: [ "admin", "user" ]
+
+audit:
+  enabled: true
+  service_url: "http://audit-service:8080/logs"
+
+encryption:
+  master_key: "dev-environment-secure-encryption-key-2025"
+  endpoints:
+  - "^/[^_][^/]+/[^_].*"
+  - "^/[^_][^/]+/_design/.*"
+  - "^/[^_][^/]+/_bulk_docs"
+  - "^/[^_][^/]+/_find"
+  - "^/[^_][^/]+/_index"
+  hsm: false
+
+proxy:
+  headers_remove: [ "transfer-encoding" ]
+  preserve_host: true
+  chunked_encoding: false
+  buffer_size: "10mb"
+  timeout: 60000

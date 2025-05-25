@@ -1,0 +1,379 @@
+name: Authorization System Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'sofa/src/auth.rs'
+      - 'sofa/src/config.rs'
+      - 'k8s/**'
+      - '.github/workflows/authorization-tests.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'sofa/src/auth.rs'
+      - 'sofa/src/config.rs' 
+      - 'k8s/**'
+      - '.github/workflows/authorization-tests.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+        
+    - name: Cache cargo dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          sofa/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('sofa/Cargo.lock') }}
+    
+    - name: Run authorization unit tests
+      working-directory: sofa
+      run: cargo test auth::tests --verbose
+      
+    - name: Run authorization integration tests
+      working-directory: sofa
+      run: cargo test authorization_integration_tests --verbose
+
+  container-tests:
+    name: Container Authorization Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Sofa container
+      run: |
+        cd sofa
+        docker build -t sofa:test .
+    
+    - name: Test authorization with container - No Auth
+      run: |
+        # Start container with auth disabled
+        docker run -d --name sofa-no-auth -p 3001:3000 \
+          -e ENVIRONMENT=test \
+          -e SOFA_AUTH_ENABLED=false \
+          -e SOFA_COUCHDB_URL=http://mock-couchdb:5984 \
+          sofa:test
+        
+        # Wait for startup
+        sleep 5
+        
+        # Should work without auth
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/_all_dbs)
+        echo "No auth response: $response"
+        
+        # Stop container
+        docker stop sofa-no-auth
+        docker rm sofa-no-auth
+
+    - name: Test authorization with container - Auth Enabled
+      run: |
+        # Create authorization rules
+        cat > auth_rules.yaml << 'EOF'
+        default_action: deny
+        rules:
+          - name: "admin-full-access"
+            when:
+              - claim: "role"
+                values: "admin"
+          - name: "test-system-access"
+            methods: ["GET", "HEAD"]
+            paths: ["^/_all_dbs$"]
+            when:
+              - claim: "role"
+                values: ["user", "admin"]
+        EOF
+        
+        # Start container with auth enabled
+        docker run -d --name sofa-auth -p 3002:3000 \
+          -e ENVIRONMENT=test \
+          -e SOFA_AUTH_ENABLED=true \
+          -e SOFA_AUTH_AUTHORIZATION="$(cat auth_rules.yaml)" \
+          sofa:test
+        
+        # Wait for startup  
+        sleep 5
+        
+        # Test unauthorized access (should return 401)
+        echo "Testing unauthorized access..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3002/_all_dbs)
+        echo "Unauthorized response: $response"
+        if [ "$response" != "401" ]; then
+          echo "Expected 401, got $response"
+          exit 1
+        fi
+        
+        # Test with invalid token (should return 401)
+        echo "Testing invalid token..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" \
+          -H "Authorization: Bearer invalid-token" \
+          http://localhost:3002/_all_dbs)
+        echo "Invalid token response: $response"
+        if [ "$response" != "401" ]; then
+          echo "Expected 401, got $response"
+          exit 1
+        fi
+        
+        # Clean up
+        docker stop sofa-auth
+        docker rm sofa-auth
+
+  cluster-tests:
+    name: Kubernetes Cluster Tests
+    runs-on: ubuntu-latest
+    needs: container-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Kind
+      uses: helm/kind-action@v1.8.0
+      with:
+        config: kind-config.yaml
+        cluster_name: test-cluster
+    
+    - name: Build and load Sofa image
+      run: |
+        cd sofa
+        docker build -t sofa:test .
+        kind load docker-image sofa:test --name test-cluster
+    
+    - name: Deploy base Kubernetes resources
+      run: |
+        # Apply base configuration
+        kubectl apply -k k8s/base/sofa
+        
+        # Wait for deployment
+        kubectl wait --for=condition=available --timeout=60s deployment/sofa
+        
+        # Check pod status
+        kubectl get pods -l app=sofa
+    
+    - name: Apply dev overlay with authorization
+      run: |
+        # Apply dev overlay
+        kubectl apply -k k8s/overlays/dev
+        
+        # Wait for rollout
+        kubectl rollout status deployment/dev-sofa --timeout=60s
+        
+        # Verify ConfigMap has authorization rules
+        kubectl get configmap dev-sofa-config -o yaml | grep -A 20 "auth_authorization"
+
+    - name: Test authorization in cluster
+      run: |
+        # Port forward to access the service
+        kubectl port-forward service/dev-sofa-service 3000:80 &
+        FORWARD_PID=$!
+        
+        # Wait for port forward to be ready
+        sleep 10
+        
+        # Test unauthorized access
+        echo "Testing unauthorized access in cluster..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/_all_dbs)
+        echo "Cluster unauthorized response: $response"
+        if [ "$response" != "401" ]; then
+          echo "Expected 401, got $response"
+          kill $FORWARD_PID
+          exit 1
+        fi
+        
+        # Test invalid token
+        echo "Testing invalid token in cluster..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" \
+          -H "Authorization: Bearer invalid-token" \
+          http://localhost:3000/_all_dbs)
+        echo "Cluster invalid token response: $response"
+        if [ "$response" != "401" ]; then
+          echo "Expected 401, got $response"
+          kill $FORWARD_PID
+          exit 1
+        fi
+        
+        # Test different endpoint
+        echo "Testing session endpoint..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/_session)
+        echo "Session endpoint response: $response"
+        if [ "$response" != "401" ]; then
+          echo "Expected 401, got $response"
+          kill $FORWARD_PID
+          exit 1
+        fi
+        
+        # Clean up port forward
+        kill $FORWARD_PID
+        
+        echo "All cluster authorization tests passed!"
+
+  configuration-validation:
+    name: Configuration Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Validate authorization configs
+      run: |
+        # Install yq for YAML processing
+        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        sudo chmod +x /usr/local/bin/yq
+        
+        # Validate dev config
+        echo "Validating dev authorization config..."
+        yq eval '.data.auth_authorization' k8s/overlays/dev/sofa-config-patch.yaml > dev-auth.yaml
+        
+        # Check for required fields
+        if ! yq eval '.default_action' dev-auth.yaml | grep -q "deny"; then
+          echo "Dev config missing default_action: deny"
+          exit 1
+        fi
+        
+        if ! yq eval '.rules | length' dev-auth.yaml | grep -q "[1-9]"; then
+          echo "Dev config has no authorization rules"
+          exit 1
+        fi
+        
+        # Validate prod config  
+        echo "Validating prod authorization config..."
+        yq eval '.data.auth_authorization' k8s/overlays/prod/sofa-config-patch.yaml > prod-auth.yaml
+        
+        if ! yq eval '.default_action' prod-auth.yaml | grep -q "deny"; then
+          echo "Prod config missing default_action: deny"
+          exit 1
+        fi
+        
+        if ! yq eval '.rules | length' prod-auth.yaml | grep -q "[1-9]"; then
+          echo "Prod config has no authorization rules"
+          exit 1
+        fi
+        
+        echo "All configuration validations passed!"
+
+  security-checks:
+    name: Security Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check for secure defaults
+      run: |
+        # Ensure all configs default to deny
+        configs=(
+          "k8s/overlays/dev/sofa-config-patch.yaml"
+          "k8s/overlays/prod/sofa-config-patch.yaml"
+          "k8s/base/sofa/sofa-config.yaml"
+        )
+        
+        for config in "${configs[@]}"; do
+          echo "Checking $config for secure defaults..."
+          
+          if ! grep -q "default_action: deny" "$config"; then
+            echo "ERROR: $config does not have default_action: deny"
+            exit 1
+          fi
+          
+          echo "✓ $config has secure defaults"
+        done
+        
+        # Check that production config is more restrictive than dev
+        echo "Validating production restrictions..."
+        
+        # Prod should not allow DELETE operations in user rules
+        if grep -A 20 "production-user-access" k8s/overlays/prod/sofa-config-patch.yaml | grep -q "DELETE"; then
+          echo "ERROR: Production config allows DELETE operations"
+          exit 1
+        fi
+        
+        echo "✓ Production config properly restricts dangerous operations"
+
+  performance-tests:
+    name: Authorization Performance
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Run authorization performance benchmarks
+      working-directory: sofa
+      run: |
+        # Create a performance test
+        cat > src/auth_bench.rs << 'EOF'
+        use std::time::Instant;
+        use crate::auth::*;
+        use serde_json::json;
+        use axum::http::Method;
+        
+        pub fn run_authorization_benchmark() {
+            let config = create_large_auth_config();
+            let claims = json!({"role": "user", "organization": "Test Org"});
+            
+            let start = Instant::now();
+            let iterations = 10000;
+            
+            for _ in 0..iterations {
+                let _ = is_authorized_with_rules(
+                    &Method::GET,
+                    "/test/document",
+                    None,
+                    &claims,
+                    &Some(config.clone())
+                );
+            }
+            
+            let duration = start.elapsed();
+            let avg_nanos = duration.as_nanos() / iterations;
+            
+            println!("Authorization performance:");
+            println!("Total time: {:?}", duration);
+            println!("Average per request: {} ns", avg_nanos);
+            println!("Requests per second: {}", 1_000_000_000 / avg_nanos);
+            
+            // Ensure performance is reasonable (less than 100μs per check)
+            assert!(avg_nanos < 100_000, "Authorization too slow: {} ns", avg_nanos);
+        }
+        
+        fn create_large_auth_config() -> AuthorizationConfig {
+            // Create config with many rules to test performance
+            AuthorizationConfig {
+                default_action: Some(DefaultAction::Deny),
+                rules: (0..50).map(|i| AuthorizationRule {
+                    name: Some(format!("rule-{}", i)),
+                    hosts: None,
+                    paths: Some(vec![format!("^/test{}.*", i)]),
+                    methods: None,
+                    when: vec![ClaimRequirement {
+                        claim: "role".to_string(),
+                        values: ClaimValues::String("user".to_string()),
+                    }],
+                }).collect(),
+            }
+        }
+        EOF
+        
+        # Add benchmark to auth module
+        echo "pub mod auth_bench;" >> src/lib.rs
+        
+        # Run the benchmark
+        cargo test auth_bench::run_authorization_benchmark --release -- --nocapture

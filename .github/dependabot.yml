@@ -1,0 +1,6 @@
+version: 2
+updates:
+- package-ecosystem: "npm"
+  directory: "/sofa" # Only scan this folder since it's the only folder with production code
+  schedule:
+    interval: "weekly"

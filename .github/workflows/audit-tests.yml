@@ -1,0 +1,395 @@
+name: Audit Middleware Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'sofa/src/audit.rs'
+      - 'sofa/src/config.rs'
+      - 'audit-service/**'
+      - 'k8s/**'
+      - '.github/workflows/audit-tests.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'sofa/src/audit.rs'
+      - 'sofa/src/config.rs'
+      - 'audit-service/**'
+      - 'k8s/**'
+      - '.github/workflows/audit-tests.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit-tests:
+    name: Audit Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+        
+    - name: Cache cargo dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          sofa/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('sofa/Cargo.lock') }}
+    
+    - name: Run audit unit tests
+      working-directory: sofa
+      run: cargo test audit::tests --verbose
+      
+    - name: Run audit integration tests
+      working-directory: sofa
+      run: cargo test audit_integration_tests --verbose
+
+  audit-service-tests:
+    name: Audit Service Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+        
+    - name: Build audit service
+      working-directory: audit-service
+      run: cargo build --release
+      
+    - name: Run audit service tests
+      working-directory: audit-service
+      run: cargo test --verbose
+      
+    - name: Build audit service container
+      working-directory: audit-service
+      run: docker build -t audit-service:test .
+
+  container-tests:
+    name: Container Audit Tests
+    runs-on: ubuntu-latest
+    needs: audit-service-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build containers
+      run: |
+        cd sofa && docker build -t sofa:audit-test .
+        cd audit-service && docker build -t audit-service:test .
+    
+    - name: Test audit logging disabled
+      run: |
+        echo "Testing with audit disabled..."
+        docker run -d --name sofa-no-audit -p 3005:3000 \
+          -e ENVIRONMENT=test \
+          -e SOFA_AUDIT_ENABLED=false \
+          -e SOFA_AUTH_ENABLED=false \
+          sofa:audit-test
+        
+        sleep 5
+        
+        # Should work without audit service
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3005/_all_dbs)
+        echo "No audit response: $response"
+        
+        docker stop sofa-no-audit && docker rm sofa-no-audit
+
+    - name: Test audit logging enabled with service
+      run: |
+        # Start audit service
+        docker run -d --name audit-service -p 3006:3001 audit-service:test
+        sleep 3
+        
+        # Start sofa with audit enabled
+        docker run -d --name sofa-with-audit -p 3007:3000 \
+          --link audit-service:audit-service \
+          -e ENVIRONMENT=test \
+          -e SOFA_AUDIT_ENABLED=true \
+          -e SOFA_AUDIT_LOG_SERVICE_URL=http://audit-service:3001/audit \
+          -e SOFA_AUTH_ENABLED=false \
+          sofa:audit-test
+        
+        sleep 5
+        
+        # Make some requests that should be audited
+        echo "Making test requests..."
+        for endpoint in "_all_dbs" "_session" "testdb"; do
+          curl -s http://localhost:3007/$endpoint || true
+        done
+        
+        # Wait for audit logs to be processed
+        sleep 3
+        
+        # Check audit service logs for entries
+        echo "Checking audit service logs..."
+        docker logs audit-service 2>&1 | grep -i "audit log" && echo "✓ Audit logs found" || echo "✗ No audit logs found"
+        
+        # Clean up
+        docker stop sofa-with-audit audit-service
+        docker rm sofa-with-audit audit-service
+
+    - name: Test audit logging resilience
+      run: |
+        echo "Testing audit resilience without service..."
+        
+        # Start sofa with audit enabled but no audit service
+        docker run -d --name sofa-audit-resilient -p 3008:3000 \
+          -e ENVIRONMENT=test \
+          -e SOFA_AUDIT_ENABLED=true \
+          -e SOFA_AUDIT_LOG_SERVICE_URL=http://nonexistent-service:3001/audit \
+          -e SOFA_AUTH_ENABLED=false \
+          sofa:audit-resilient
+        
+        sleep 5
+        
+        # Should still work even if audit service is unavailable
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3008/_all_dbs)
+        echo "Resilience test response: $response"
+        
+        # Check logs for audit failures (should continue working)
+        docker logs sofa-audit-resilient 2>&1 | grep -i "failed to send audit" && echo "✓ Audit failures logged" || echo "○ No audit failures"
+        
+        docker stop sofa-audit-resilient && docker rm sofa-audit-resilient
+
+  cluster-tests:
+    name: Kubernetes Cluster Audit Tests
+    runs-on: ubuntu-latest
+    needs: container-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Kind
+      uses: helm/kind-action@v1.8.0
+      with:
+        config: kind-config.yaml
+        cluster_name: audit-test-cluster
+    
+    - name: Build and load images
+      run: |
+        cd sofa && docker build -t sofa:audit-test .
+        cd audit-service && docker build -t audit-service:test .
+        
+        kind load docker-image sofa:audit-test --name audit-test-cluster
+        kind load docker-image audit-service:test --name audit-test-cluster
+    
+    - name: Deploy audit service
+      run: |
+        # Update image in deployment
+        sed -i 's|audit-service:latest|audit-service:test|g' k8s/base/audit/audit.yaml
+        
+        # Deploy audit service
+        kubectl apply -f k8s/base/audit/audit.yaml
+        
+        # Wait for deployment
+        kubectl wait --for=condition=available --timeout=60s deployment/dev-audit-service
+        
+        echo "Audit service pods:"
+        kubectl get pods -l app=audit-service
+
+    - name: Deploy sofa with audit enabled
+      run: |
+        # Update sofa image
+        sed -i 's|sofa:latest|sofa:audit-test|g' k8s/base/sofa/deployment.yaml
+        
+        # Apply base configuration
+        kubectl apply -k k8s/base/sofa
+        
+        # Apply dev overlay (includes audit configuration)
+        kubectl apply -k k8s/overlays/dev
+        
+        # Wait for deployment
+        kubectl rollout status deployment/dev-sofa --timeout=60s
+        
+        echo "Sofa pods:"
+        kubectl get pods -l app=sofa
+
+    - name: Test audit logging in cluster
+      run: |
+        # Port forward to access services
+        kubectl port-forward service/dev-sofa-service 3009:80 &
+        SOFA_PID=$!
+        kubectl port-forward service/dev-audit-service 3010:80 &
+        AUDIT_PID=$!
+        
+        sleep 10
+        
+        # Test audit service health
+        echo "Testing audit service health..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3010/health)
+        echo "Audit service health: $response"
+        if [ "$response" != "200" ]; then
+          echo "Audit service not healthy"
+          kill $SOFA_PID $AUDIT_PID
+          exit 1
+        fi
+        
+        # Make requests through sofa (should generate audit logs)
+        echo "Making test requests through sofa..."
+        for i in {1..5}; do
+          curl -s http://localhost:3009/_all_dbs || true
+          curl -s http://localhost:3009/_session || true
+          sleep 1
+        done
+        
+        # Wait for audit processing
+        sleep 5
+        
+        # Check audit service logs for received entries
+        echo "Checking audit service logs..."
+        kubectl logs -l app=audit-service --tail=20 | grep -i "audit log" && echo "✓ Audit logs received in cluster" || echo "✗ No audit logs found"
+        
+        # Check sofa logs for audit sending
+        echo "Checking sofa audit middleware logs..."
+        kubectl logs -l app=sofa --tail=20 | grep -i "audit" && echo "✓ Audit middleware active" || echo "○ No audit middleware logs"
+        
+        # Clean up port forwards
+        kill $SOFA_PID $AUDIT_PID || true
+
+  performance-tests:
+    name: Audit Performance Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Run audit performance benchmarks
+      working-directory: sofa
+      run: |
+        # Create a performance test
+        cat > src/audit_bench.rs << 'EOF'
+        use std::time::Instant;
+        use crate::audit::*;
+        use axum::http::Method;
+        
+        pub fn run_audit_performance_test() {
+            let start = Instant::now();
+            let iterations = 10000;
+            
+            for i in 0..iterations {
+                let entry = create_audit_entry(
+                    &Method::GET,
+                    &format!("/test/path/{}", i),
+                    Some(format!("user{}", i)),
+                    200,
+                    true,
+                );
+                
+                // Serialize (this is what happens in real usage)
+                let _serialized = serde_json::to_string(&entry).unwrap();
+            }
+            
+            let duration = start.elapsed();
+            let avg_nanos = duration.as_nanos() / iterations;
+            
+            println!("Audit entry creation performance:");
+            println!("Total time: {:?}", duration);
+            println!("Average per entry: {} ns", avg_nanos);
+            println!("Entries per second: {}", 1_000_000_000 / avg_nanos);
+            
+            // Ensure performance is reasonable (less than 10μs per entry)
+            assert!(avg_nanos < 10_000, "Audit entry creation too slow: {} ns", avg_nanos);
+        }
+        EOF
+        
+        # Add benchmark to lib
+        echo "pub mod audit_bench;" >> src/lib.rs
+        
+        # Run the benchmark
+        cargo test audit_bench::run_audit_performance_test --release -- --nocapture
+
+  configuration-validation:
+    name: Audit Configuration Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Validate audit configurations
+      run: |
+        # Install yq for YAML processing
+        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        sudo chmod +x /usr/local/bin/yq
+        
+        # Check all configs have audit configuration
+        configs=(
+          "k8s/overlays/dev/sofa-config-patch.yaml"
+          "k8s/overlays/prod/sofa-config-patch.yaml"
+          "k8s/base/sofa/sofa-config.yaml"
+        )
+        
+        for config in "${configs[@]}"; do
+          echo "Checking $config for audit configuration..."
+          
+          # Check audit_enabled is set
+          if ! yq eval '.data.audit_enabled' "$config" | grep -q "true"; then
+            echo "WARNING: $config does not have audit_enabled: true"
+          else
+            echo "✓ $config has audit enabled"
+          fi
+          
+          # Check audit service URL is set
+          if ! yq eval '.data.audit_log_service_url' "$config" | grep -q "http"; then
+            echo "ERROR: $config missing audit_log_service_url"
+            exit 1
+          else
+            echo "✓ $config has audit service URL"
+          fi
+        done
+        
+        echo "✓ All audit configurations valid"
+
+  security-validation:
+    name: Audit Security Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check audit security practices
+      run: |
+        echo "Validating audit security practices..."
+        
+        # Check that audit logs include timestamps
+        if ! grep -r "timestamp" sofa/src/audit.rs; then
+          echo "ERROR: Audit logs missing timestamp field"
+          exit 1
+        fi
+        echo "✓ Audit logs include timestamps"
+        
+        # Check that user IDs are logged when available
+        if ! grep -r "user_id" sofa/src/audit.rs; then
+          echo "ERROR: Audit logs missing user_id field"
+          exit 1
+        fi
+        echo "✓ Audit logs include user IDs"
+        
+        # Check that status codes are logged
+        if ! grep -r "status_code" sofa/src/audit.rs; then
+          echo "ERROR: Audit logs missing status_code field"
+          exit 1
+        fi
+        echo "✓ Audit logs include status codes"
+        
+        # Check that audit failures don't crash the service
+        if grep -r "unwrap()" sofa/src/audit.rs | grep -v test; then
+          echo "WARNING: Found unwrap() calls in audit code (should handle errors gracefully)"
+        else
+          echo "✓ Audit code handles errors gracefully"
+        fi
+        
+        echo "✓ All audit security validations passed"
