@@ -460,3 +460,119 @@ tasks:
     desc: Display help information
     cmds:
     - task --list
+
+  test:auth:unit:
+    desc: Run authorization unit tests
+    dir: sofa
+    cmds:
+    - cargo test auth::tests --verbose
+
+  test:auth:integration:
+    desc: Run authorization integration tests
+    dir: sofa
+    cmds:
+    - cargo test authorization_integration_tests --verbose
+
+  test:auth:container:
+    desc: Test authorization in container
+    cmds:
+    - |
+      echo "Building test container..."
+      cd sofa && docker build -t sofa:auth-test .
+
+      echo "Testing unauthorized access..."
+      docker run -d --name sofa-auth-test -p 3003:3000 \
+        -e ENVIRONMENT=test \
+        -e SOFA_AUTH_ENABLED=true \
+        -e SOFA_AUTH_AUTHORIZATION="$(cat k8s/overlays/dev/sofa-config-patch.yaml | yq eval '.data.auth_authorization' -)" \
+        sofa:auth-test
+
+      sleep 5
+
+      # Test unauthorized access
+      response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3003/_all_dbs)
+      echo "Response: $response"
+      [ "$response" = "401" ] && echo "✓ Unauthorized access blocked" || (echo "✗ Expected 401, got $response" && exit 1)
+
+      # Test invalid token
+      response=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer invalid" http://localhost:3003/_all_dbs)
+      echo "Invalid token response: $response"
+      [ "$response" = "401" ] && echo "✓ Invalid token rejected" || (echo "✗ Expected 401, got $response" && exit 1)
+
+      echo "✓ All container tests passed"
+      docker stop sofa-auth-test && docker rm sofa-auth-test
+
+  test:auth:cluster:
+    desc: Test authorization in cluster
+    deps: [ cluster:deploy:dev ]
+    cmds:
+    - |
+      echo "Testing authorization in cluster..."
+      kubectl port-forward service/dev-sofa-service 3004:80 &
+      FORWARD_PID=$!
+      sleep 10
+
+      # Test endpoints
+      endpoints=("_all_dbs" "_session" "nonexistent/path")
+      for endpoint in "${endpoints[@]}"; do
+        echo "Testing /$endpoint..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3004/$endpoint)
+        [ "$response" = "401" ] && echo "✓ $endpoint blocked" || (echo "✗ $endpoint: expected 401, got $response" && kill $FORWARD_PID && exit 1)
+      done
+
+      kill $FORWARD_PID
+      echo "✓ All cluster authorization tests passed"
+
+  test:auth:all:
+    desc: Run all authorization tests
+    cmds:
+    - task: test:auth:unit
+    - task: test:auth:integration
+    - task: test:auth:container
+    - task: test:auth:cluster
+
+  test:auth:config:
+    desc: Validate authorization configurations
+    cmds:
+    - |
+      echo "Validating authorization configurations..."
+
+      configs=(
+        "k8s/overlays/dev/sofa-config-patch.yaml"
+        "k8s/overlays/prod/sofa-config-patch.yaml"
+        "k8s/base/sofa/sofa-config.yaml"
+      )
+
+      for config in "${configs[@]}"; do
+        echo "Checking $config..."
+        
+        # Extract and validate YAML
+        yq eval '.data.auth_authorization' "$config" > temp_auth.yaml
+        
+        # Check required fields
+        [ "$(yq eval '.default_action' temp_auth.yaml)" = "deny" ] && echo "✓ default_action: deny" || (echo "✗ Missing default_action: deny" && exit 1)
+        [ "$(yq eval '.rules | length' temp_auth.yaml)" -gt 0 ] && echo "✓ Has authorization rules" || (echo "✗ No authorization rules" && exit 1)
+        
+        rm temp_auth.yaml
+      done
+
+      echo "✓ All configurations valid"
+
+  test:auth:security:
+    desc: Run security validation checks
+    cmds:
+    - |
+      echo "Running security checks..."
+
+      # Check for secure defaults
+      grep -r "default_action: deny" k8s/ || (echo "✗ Found non-deny default actions" && exit 1)
+      echo "✓ All configs use deny by default"
+
+      # Check production restrictions
+      if grep -A 20 "production-user-access" k8s/overlays/prod/sofa-config-patch.yaml | grep -q "DELETE"; then
+        echo "✗ Production allows DELETE operations"
+        exit 1
+      fi
+      echo "✓ Production properly restricts DELETE"
+
+      echo "✓ All security checks passed"

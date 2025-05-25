@@ -581,4 +581,296 @@ async fn verify_token(token: &str, auth_config: &AuthSettings, client: &Client) 
     debug!("Token validated successfully");
     
     Ok(token_data.claims)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use axum::http::Method;
+
+    fn create_test_claims(role: &str, organization: Option<&str>, db_create: Option<bool>) -> serde_json::Value {
+        let mut claims = json!({
+            "role": role,
+            "sub": "test-user-123"
+        });
+        
+        if let Some(org) = organization {
+            claims["organization"] = json!(org);
+        }
+        
+        if let Some(create) = db_create {
+            claims["db_create"] = json!(create);
+        }
+        
+        claims
+    }
+
+    fn create_test_auth_config() -> AuthorizationConfig {
+        AuthorizationConfig {
+            default_action: Some(DefaultAction::Deny),
+            rules: vec![
+                // Rule 1: Admin full access
+                AuthorizationRule {
+                    name: Some("admin-full-access".to_string()),
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    when: vec![
+                        ClaimRequirement {
+                            claim: "role".to_string(),
+                            values: ClaimValues::String("admin".to_string()),
+                        }
+                    ],
+                },
+                // Rule 2: User database access
+                AuthorizationRule {
+                    name: Some("user-database-access".to_string()),
+                    hosts: None,
+                    paths: Some(vec![
+                        r"^/[^_][^/]+/.*".to_string(),
+                        r"^/[^_][^/]+/_design/.*".to_string(),
+                    ]),
+                    methods: None,
+                    when: vec![
+                        ClaimRequirement {
+                            claim: "organization".to_string(),
+                            values: ClaimValues::String("Sofa Organization".to_string()),
+                        },
+                        ClaimRequirement {
+                            claim: "role".to_string(),
+                            values: ClaimValues::StringArray(vec!["user".to_string(), "admin".to_string()]),
+                        }
+                    ],
+                },
+                // Rule 3: Database creation
+                AuthorizationRule {
+                    name: Some("database-creation".to_string()),
+                    hosts: None,
+                    paths: Some(vec![r"^/[^_][^/]+/?$".to_string()]),
+                    methods: Some(vec!["PUT".to_string()]),
+                    when: vec![
+                        ClaimRequirement {
+                            claim: "db_create".to_string(),
+                            values: ClaimValues::Boolean(true),
+                        },
+                        ClaimRequirement {
+                            claim: "role".to_string(),
+                            values: ClaimValues::StringArray(vec!["admin".to_string(), "user".to_string()]),
+                        }
+                    ],
+                },
+                // Rule 4: System read access
+                AuthorizationRule {
+                    name: Some("system-database-read".to_string()),
+                    hosts: None,
+                    paths: Some(vec![r"^/_all_dbs$".to_string(), r"^/_.*".to_string()]),
+                    methods: Some(vec!["GET".to_string(), "HEAD".to_string()]),
+                    when: vec![
+                        ClaimRequirement {
+                            claim: "role".to_string(),
+                            values: ClaimValues::StringArray(vec!["admin".to_string(), "user".to_string()]),
+                        }
+                    ],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_admin_full_access() {
+        let config = create_test_auth_config();
+        let claims = create_test_claims("admin", None, None);
+        
+        // Admin should have access to any endpoint
+        assert!(is_authorized_with_rules(&Method::GET, "/any/path", None, &claims, &Some(config.clone())));
+        assert!(is_authorized_with_rules(&Method::POST, "/_all_dbs", None, &claims, &Some(config.clone())));
+        assert!(is_authorized_with_rules(&Method::DELETE, "/database/doc", None, &claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_user_database_access() {
+        let config = create_test_auth_config();
+        let claims = create_test_claims("user", Some("Sofa Organization"), None);
+        
+        // Should allow access to database documents
+        assert!(is_authorized_with_rules(&Method::GET, "/mydb/doc123", None, &claims, &Some(config.clone())));
+        assert!(is_authorized_with_rules(&Method::POST, "/mydb/_design/view", None, &claims, &Some(config.clone())));
+        
+        // Should deny access to system endpoints (no system rule applies without proper claims)
+        assert!(!is_authorized_with_rules(&Method::GET, "/_all_dbs", None, &claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_database_creation_permission() {
+        let config = create_test_auth_config();
+        let claims = create_test_claims("user", Some("Sofa Organization"), Some(true));
+        
+        // Should allow database creation
+        assert!(is_authorized_with_rules(&Method::PUT, "/newdb", None, &claims, &Some(config.clone())));
+        assert!(is_authorized_with_rules(&Method::PUT, "/newdb/", None, &claims, &Some(config.clone())));
+        
+        // Should deny without db_create claim
+        let claims_no_create = create_test_claims("user", Some("Sofa Organization"), Some(false));
+        assert!(!is_authorized_with_rules(&Method::PUT, "/newdb", None, &claims_no_create, &Some(config)));
+    }
+
+    #[test]
+    fn test_system_read_access() {
+        let config = create_test_auth_config();
+        let claims = create_test_claims("user", Some("Sofa Organization"), None);
+        
+        // Should allow system read endpoints (matches system-database-read rule)
+        assert!(is_authorized_with_rules(&Method::GET, "/_all_dbs", None, &claims, &Some(config.clone())));
+        assert!(is_authorized_with_rules(&Method::HEAD, "/_session", None, &claims, &Some(config.clone())));
+        
+        // Should deny POST to system endpoints (only GET/HEAD allowed)
+        assert!(!is_authorized_with_rules(&Method::POST, "/_all_dbs", None, &claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_unauthorized_user() {
+        let config = create_test_auth_config();
+        let claims = create_test_claims("guest", None, None); // No proper organization or role
+        
+        // Should deny access to everything (no rules match)
+        assert!(!is_authorized_with_rules(&Method::GET, "/mydb/doc", None, &claims, &Some(config.clone())));
+        assert!(!is_authorized_with_rules(&Method::GET, "/_all_dbs", None, &claims, &Some(config.clone())));
+        assert!(!is_authorized_with_rules(&Method::PUT, "/newdb", None, &claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_wrong_organization() {
+        let config = create_test_auth_config();
+        let claims = create_test_claims("user", Some("Wrong Organization"), Some(true));
+        
+        // Should deny access due to wrong organization
+        assert!(!is_authorized_with_rules(&Method::GET, "/mydb/doc", None, &claims, &Some(config.clone())));
+        assert!(!is_authorized_with_rules(&Method::PUT, "/newdb", None, &claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_default_action_deny() {
+        let mut config = create_test_auth_config();
+        config.default_action = Some(DefaultAction::Deny);
+        config.rules.clear(); // No rules
+        
+        let claims = create_test_claims("admin", None, None);
+        
+        // Should deny when no rules match and default is deny
+        assert!(!is_authorized_with_rules(&Method::GET, "/any/path", None, &claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_default_action_allow() {
+        let mut config = create_test_auth_config();
+        config.default_action = Some(DefaultAction::Allow);
+        config.rules.clear(); // No rules
+        
+        let claims = create_test_claims("anyone", None, None);
+        
+        // Should allow when no rules match and default is allow
+        assert!(is_authorized_with_rules(&Method::GET, "/any/path", None, &claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_host_matching() {
+        let mut config = AuthorizationConfig {
+            default_action: Some(DefaultAction::Deny),
+            rules: vec![
+                AuthorizationRule {
+                    name: Some("staging-only".to_string()),
+                    hosts: Some(vec![r".*\.staging\..*".to_string()]),
+                    paths: None,
+                    methods: None,
+                    when: vec![
+                        ClaimRequirement {
+                            claim: "role".to_string(),
+                            values: ClaimValues::String("user".to_string()),
+                        }
+                    ],
+                }
+            ],
+        };
+        
+        let claims = create_test_claims("user", None, None);
+        
+        // Should allow on staging host
+        assert!(is_authorized_with_rules(&Method::GET, "/any/path", Some("app.staging.example.com"), &claims, &Some(config.clone())));
+        
+        // Should deny on production host
+        assert!(!is_authorized_with_rules(&Method::GET, "/any/path", Some("app.prod.example.com"), &claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_claim_value_types() {
+        let config = AuthorizationConfig {
+            default_action: Some(DefaultAction::Deny),
+            rules: vec![
+                // String claim
+                AuthorizationRule {
+                    name: Some("string-claim".to_string()),
+                    hosts: None,
+                    paths: Some(vec!["/string".to_string()]),
+                    methods: None,
+                    when: vec![
+                        ClaimRequirement {
+                            claim: "type".to_string(),
+                            values: ClaimValues::String("string".to_string()),
+                        }
+                    ],
+                },
+                // Boolean claim
+                AuthorizationRule {
+                    name: Some("boolean-claim".to_string()),
+                    hosts: None,
+                    paths: Some(vec!["/boolean".to_string()]),
+                    methods: None,
+                    when: vec![
+                        ClaimRequirement {
+                            claim: "active".to_string(),
+                            values: ClaimValues::Boolean(true),
+                        }
+                    ],
+                },
+                // Array claim
+                AuthorizationRule {
+                    name: Some("array-claim".to_string()),
+                    hosts: None,
+                    paths: Some(vec!["/array".to_string()]),
+                    methods: None,
+                    when: vec![
+                        ClaimRequirement {
+                            claim: "groups".to_string(),
+                            values: ClaimValues::StringArray(vec!["group1".to_string(), "group2".to_string()]),
+                        }
+                    ],
+                },
+            ],
+        };
+        
+        // Test string claim
+        let string_claims = json!({"type": "string"});
+        assert!(is_authorized_with_rules(&Method::GET, "/string", None, &string_claims, &Some(config.clone())));
+        
+        // Test boolean claim
+        let boolean_claims = json!({"active": true});
+        assert!(is_authorized_with_rules(&Method::GET, "/boolean", None, &boolean_claims, &Some(config.clone())));
+        
+        // Test array claim
+        let array_claims = json!({"groups": "group1"});
+        assert!(is_authorized_with_rules(&Method::GET, "/array", None, &array_claims, &Some(config)));
+    }
+
+    #[test]
+    fn test_legacy_fallback() {
+        // Test that when no authorization config is provided, it falls back to legacy
+        let claims = json!({
+            "get": [r"^/.*$"]
+        });
+        
+        // Should use legacy authorization when no config provided
+        assert!(is_authorized_with_rules(&Method::GET, "/any/path", None, &claims, &None));
+        assert!(!is_authorized_with_rules(&Method::POST, "/any/path", None, &claims, &None));
+    }
 } 
